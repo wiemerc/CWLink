@@ -40,8 +40,12 @@ from struct import pack, unpack
 # }
 
 
-class AmiHunkReader(object):
-    # from dos/doshunks.h
+class HunkReader(object):
+    # file types
+    FILE_EXE = 1
+    FILE_OBJ = 2
+    
+    # block types from from dos/doshunks.h
     HUNK_UNIT	  = 999
     HUNK_NAME	  = 1000
     HUNK_CODE	  = 1001
@@ -63,6 +67,7 @@ class AmiHunkReader(object):
     HUNK_LIB	  = 1018
     HUNK_INDEX	  = 1019
     
+    # symbol types from from dos/doshunks.h
     EXT_SYMB   = 0
     EXT_DEF	   = 1
     EXT_ABS	   = 2
@@ -81,30 +86,30 @@ class AmiHunkReader(object):
 
 
     def read(self):
-        self._fobj = open(self.fname, 'rb')
-        hnum = 0
-        while True:
-            try:
-                btype = self._read_word()
-                log(INFO, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
-                if btype == AmiHunkReader.HUNK_END:
-                    # possibly another hunk follows, nothing else to do
-                    log(INFO, "hunk #%d finished", hnum)
-                    hnum += 1
-                    continue
-                else:
-                    AmiHunkReader._read_funcs[btype](self)
-                    
-            except EOFError:
-                if btype == AmiHunkReader.HUNK_END:
+        with open(self.fname, 'rb') as self._fobj:
+            hnum = 0
+            while True:
+                try:
+                    btype = self._read_word()
+                    log(INFO, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
+                    if btype == HunkReader.HUNK_END:
+                        # possibly another hunk follows, nothing else to do
+                        log(INFO, "hunk #%d finished", hnum)
+                        hnum += 1
+                        continue
+                    else:
+                        HunkReader._read_funcs[btype](self)
+                        
+                except EOFError:
+                    if btype == HunkReader.HUNK_END:
+                        break
+                    else:
+                        log(ERROR, "encountered EOF while reading file '%s'", self.fname)
+                        break
+                        
+                except KeyError as ex:
+                    log(ERROR, "block type %s not known or implemented", ex)
                     break
-                else:
-                    log(ERROR, "encountered EOF while reading file '%s'", self.fname)
-                    break
-                    
-            except KeyError as ex:
-                log(ERROR, "block type %s not known or implemented", ex)
-                break
                 
                 
     def _read_word(self):
@@ -124,8 +129,9 @@ class AmiHunkReader(object):
             return EOFError
     
     
-    def _read_header(self):
+    def _read_header_block(self):
         log(INFO, "reading HUNK_HEADER block... file is a AmigaDOS executable")
+        self.ftype = HunkReader.FILE_EXE
         log(DEBUG, "long words reserved for resident libraries: %d", self._read_word())
         log(DEBUG, "number of hunks: %d", self._read_word())
         fhunk = self._read_word()
@@ -136,40 +142,44 @@ class AmiHunkReader(object):
             log(DEBUG, "size (in bytes) of hunk #%d: %d", hnum, self._read_word() * 4)
     
     
-    def _read_unit(self):
+    def _read_unit_block(self):
         log(INFO, "reading HUNK_UNIT block... file is a AmigaDOS object file")
+        self.ftype = HunkReader.FILE_OBJ
         log(INFO, "unit name: %s", self._read_string(self._read_word() * 4))
         
         
-    def _read_name(self):
+    def _read_name_block(self):
         log(INFO, "reading HUNK_NAME block...")
         log(INFO, "hunk name: %s", self._read_string(self._read_word() * 4))
         
         
-    def _read_code(self):
+    def _read_code_block(self):
         log(INFO, "reading HUNK_CODE block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
         self._fobj.read(nwords * 4)
         
         
-    def _read_data(self):
+    def _read_data_block(self):
         log(INFO, "reading HUNK_DATA block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
         # Both the AmigaDOS manual and the Amiga Guru book say that after the length word only the data
-        # itself and nothing else follows, but it seems there always comes a zero word after the data...
-#        self._fobj.read((nwords + 1) * 4)
-        self._fobj.read(nwords * 4)
+        # itself and nothing else follows, but it seems in executables there always comes a zero word
+        # after the data...
+        if self.ftype == HunkReader.FILE_EXE:
+            self._fobj.read((nwords + 1) * 4)
+        else:
+            self._fobj.read(nwords * 4)
         
         
-    def _read_bss(self):
+    def _read_bss_block(self):
         log(INFO, "reading HUNK_BSS block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of BSS block: %d", nwords * 4)
         
         
-    def _read_ext(self):
+    def _read_ext_block(self):
         log(INFO, "reading HUNK_EXT block...")
         while True:
             type_len = self._read_word()
@@ -179,10 +189,10 @@ class AmiHunkReader(object):
             stype = (type_len & 0xff000000) >> 24
             sname = self._read_string((type_len & 0x00ffffff) * 4)
             
-            if stype in (AmiHunkReader.EXT_DEF, AmiHunkReader.EXT_ABS, AmiHunkReader.EXT_RES):
+            if stype in (HunkReader.EXT_DEF, HunkReader.EXT_ABS, HunkReader.EXT_RES):
                 # definition
                 log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, self._read_word())
-            elif stype in (AmiHunkReader.EXT_REF8, AmiHunkReader.EXT_REF16, AmiHunkReader.EXT_REF32):
+            elif stype in (HunkReader.EXT_REF8, HunkReader.EXT_REF16, HunkReader.EXT_REF32):
                 # reference(s)
                 nrefs = self._read_word()
                 for i in range(0, nrefs):
@@ -191,7 +201,7 @@ class AmiHunkReader(object):
                 log(ERROR, "symbol type %d not supported", stype)
         
         
-    def _read_symbol(self):
+    def _read_symbol_block(self):
         log(INFO, "reading HUNK_SYMBOL block...")
         while True:
             nwords = self._read_word()
@@ -203,7 +213,7 @@ class AmiHunkReader(object):
             log(DEBUG, "%s = 0x%08x", sname, sval)
         
         
-    def _read_reloc32(self):
+    def _read_reloc32_block(self):
         log(INFO, "reading HUNK_RELOC32 block...")
         while True:
             noffsets = self._read_word()
@@ -216,22 +226,24 @@ class AmiHunkReader(object):
                 log(DEBUG, "offset = 0x%08x", self._read_word())
             
         
-    def get_blocks(self):
-        pass
-    
-    
     _read_funcs = dict()
-    _read_funcs[HUNK_HEADER]  = _read_header
-    _read_funcs[HUNK_UNIT]    = _read_unit
-    _read_funcs[HUNK_NAME]    = _read_name
-    _read_funcs[HUNK_CODE]    = _read_code
-    _read_funcs[HUNK_DATA]    = _read_data
-    _read_funcs[HUNK_BSS]     = _read_bss
-    _read_funcs[HUNK_EXT]     = _read_ext
-    _read_funcs[HUNK_SYMBOL]  = _read_symbol
-    _read_funcs[HUNK_RELOC32] = _read_reloc32
+    _read_funcs[HUNK_HEADER]  = _read_header_block
+    _read_funcs[HUNK_UNIT]    = _read_unit_block
+    _read_funcs[HUNK_NAME]    = _read_name_block
+    _read_funcs[HUNK_CODE]    = _read_code_block
+    _read_funcs[HUNK_DATA]    = _read_data_block
+    _read_funcs[HUNK_BSS]     = _read_bss_block
+    _read_funcs[HUNK_EXT]     = _read_ext_block
+    _read_funcs[HUNK_SYMBOL]  = _read_symbol_block
+    _read_funcs[HUNK_RELOC32] = _read_reloc32_block
+
+
+
+class Hunk(object):
+    pass
+
 
 
 logging.basicConfig(level = DEBUG, format = '%(levelname)s: %(message)s')
-reader = AmiHunkReader(sys.argv[1])
+reader = HunkReader(sys.argv[1])
 reader.read()
