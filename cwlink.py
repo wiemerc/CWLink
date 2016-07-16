@@ -5,6 +5,7 @@ import sys
 import logging
 from logging import log, DEBUG, INFO, WARN, ERROR, CRITICAL
 from struct import pack, unpack
+from argparse import ArgumentParser
 
 
 # std::string hexdump (const uint8_t *buffer, size_t length)
@@ -82,19 +83,20 @@ class HunkReader(object):
         
     
     def __init__(self, fname):
-        self.fname = fname
+        self._fname = fname
+        self._hunks = list()
 
 
     def read(self):
-        with open(self.fname, 'rb') as self._fobj:
+        with open(self._fname, 'rb') as self._fobj:
             hnum = 0
             while True:
                 try:
                     btype = self._read_word()
-                    log(INFO, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
+                    log(DEBUG, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
                     if btype == HunkReader.HUNK_END:
                         # possibly another hunk follows, nothing else to do
-                        log(INFO, "hunk #%d finished", hnum)
+                        log(DEBUG, "hunk #%d finished", hnum)
                         hnum += 1
                         continue
                     else:
@@ -112,6 +114,10 @@ class HunkReader(object):
                     break
                 
                 
+    def get_hunks(self):
+        return self._hunks.__iter__()
+    
+    
     def _read_word(self):
         buffer = self._fobj.read(4)
         if buffer:
@@ -131,7 +137,9 @@ class HunkReader(object):
     
     def _read_header_block(self):
         log(INFO, "reading HUNK_HEADER block... file is a AmigaDOS executable")
-        self.ftype = HunkReader.FILE_EXE
+        self._ftype = HunkReader.FILE_EXE
+        # In an executable the hunks don't have names...
+        self._name = ''
         log(DEBUG, "long words reserved for resident libraries: %d", self._read_word())
         log(DEBUG, "number of hunks: %d", self._read_word())
         fhunk = self._read_word()
@@ -144,20 +152,23 @@ class HunkReader(object):
     
     def _read_unit_block(self):
         log(INFO, "reading HUNK_UNIT block... file is a AmigaDOS object file")
-        self.ftype = HunkReader.FILE_OBJ
+        self._ftype = HunkReader.FILE_OBJ
         log(INFO, "unit name: %s", self._read_string(self._read_word() * 4))
         
         
     def _read_name_block(self):
         log(INFO, "reading HUNK_NAME block...")
-        log(INFO, "hunk name: %s", self._read_string(self._read_word() * 4))
+        # A HUNK_NAME block always starts a new hunk, but we don't know yet what kind of hunk it will be,
+        # so we just store the name for now.
+        self._name = self._read_string(self._read_word() * 4)
+        log(INFO, "hunk name: %s", self._name)
         
         
     def _read_code_block(self):
         log(INFO, "reading HUNK_CODE block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
-        self._fobj.read(nwords * 4)
+        self._hunks.append(CodeHunk(self._name, self._fobj.read(nwords * 4)))
         
         
     def _read_data_block(self):
@@ -167,10 +178,10 @@ class HunkReader(object):
         # Both the AmigaDOS manual and the Amiga Guru book say that after the length word only the data
         # itself and nothing else follows, but it seems in executables there always comes a zero word
         # after the data...
-        if self.ftype == HunkReader.FILE_EXE:
-            self._fobj.read((nwords + 1) * 4)
+        if self._ftype == HunkReader.FILE_EXE:
+            self._hunks.append(DataHunk(self._name, self._fobj.read((nwords + 1) * 4)))
         else:
-            self._fobj.read(nwords * 4)
+            self._hunks.append(DataHunk(self._name, self._fobj.read(nwords * 4)))
         
         
     def _read_bss_block(self):
@@ -244,6 +255,52 @@ class Hunk(object):
 
 
 
-logging.basicConfig(level = DEBUG, format = '%(levelname)s: %(message)s')
-reader = HunkReader(sys.argv[1])
-reader.read()
+class CodeHunk(Hunk):
+    def __init__(self, name, code):
+        self.name = name
+        self.code = code
+        
+        
+    def __repr__(self):
+        return "CodeHunk[name = %s, size = %d]" % (self.name, len(self.code))
+
+
+
+class DataHunk(Hunk):
+    def __init__(self, name, data):
+        self.name = name
+        self.data = data
+
+
+    def __repr__(self):
+        return "DataHunk[name = %s, size = %d]" % (self.name, len(self.data))
+
+
+
+class BSSHunk(Hunk):
+    pass
+
+
+
+parser = ArgumentParser(description = 'Simple linker for AmigaOS')
+parser.add_argument('-o', dest = 'ofname', type = str, help = 'name of output file (executable)')
+parser.add_argument('-v', dest = 'verbose', action = 'store_true', help = 'verbose output')
+parser.add_argument('files', nargs = '*', help = 'object file(s)')
+args = parser.parse_args()
+if args.verbose:
+    level = DEBUG
+else:
+    level = INFO
+logging.basicConfig(level = level, format = '%(levelname)s: %(message)s')
+
+cblocks         = dict()
+dblocks         = dict()
+exported_syms   = dict()
+referenced_syms = dict()
+for fname in args.files:
+    log(INFO, "reading object file %s", fname)
+    reader = HunkReader(fname)
+    reader.read()
+    
+    for hunk in reader.get_hunks():
+        print(hunk)
