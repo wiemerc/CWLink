@@ -6,6 +6,8 @@ import logging
 from logging import log, DEBUG, INFO, WARN, ERROR, CRITICAL
 from struct import pack, unpack
 from argparse import ArgumentParser
+from collections import namedtuple
+from recordclass import recordclass
 
 
 # std::string hexdump (const uint8_t *buffer, size_t length)
@@ -129,8 +131,7 @@ class HunkReader(object):
     def _read_string(self, nchars):
         buffer = self._fobj.read(nchars)
         if buffer:
-            # TODO: remove trailing NUL bytes
-            return unpack('%ds' % nchars, buffer)[0]
+            return unpack('%ds' % nchars, buffer)[0].decode('ascii').replace('\x00', '')
         else:
             return EOFError
     
@@ -153,22 +154,23 @@ class HunkReader(object):
     def _read_unit_block(self):
         log(INFO, "reading HUNK_UNIT block... file is a AmigaDOS object file")
         self._ftype = HunkReader.FILE_OBJ
-        log(INFO, "unit name: %s", self._read_string(self._read_word() * 4))
+        self.uname  = self._read_string(self._read_word() * 4)
+        log(INFO, "unit name: %s", self.uname)
         
         
     def _read_name_block(self):
         log(INFO, "reading HUNK_NAME block...")
         # A HUNK_NAME block always starts a new hunk, but we don't know yet what kind of hunk it will be,
         # so we just store the name for now.
-        self._name = self._read_string(self._read_word() * 4)
-        log(INFO, "hunk name: %s", self._name)
+        self._hname = self._read_string(self._read_word() * 4)
+        log(INFO, "hunk name: %s", self._hname)
         
         
     def _read_code_block(self):
         log(INFO, "reading HUNK_CODE block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
-        self._hunks.append(CodeHunk(self._name, self._fobj.read(nwords * 4)))
+        self._hunks.append(CodeHunk(self._hname, self._fobj.read(nwords * 4)))
         
         
     def _read_data_block(self):
@@ -179,15 +181,16 @@ class HunkReader(object):
         # itself and nothing else follows, but it seems in executables there always comes a zero word
         # after the data...
         if self._ftype == HunkReader.FILE_EXE:
-            self._hunks.append(DataHunk(self._name, self._fobj.read((nwords + 1) * 4)))
+            self._hunks.append(DataHunk(self._hname, self._fobj.read((nwords + 1) * 4)))
         else:
-            self._hunks.append(DataHunk(self._name, self._fobj.read(nwords * 4)))
+            self._hunks.append(DataHunk(self._hname, self._fobj.read(nwords * 4)))
         
         
     def _read_bss_block(self):
         log(INFO, "reading HUNK_BSS block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of BSS block: %d", nwords * 4)
+        self._hunks.append(BSSHunk(self._hname, nwords * 4))
         
         
     def _read_ext_block(self):
@@ -202,7 +205,9 @@ class HunkReader(object):
             
             if stype in (HunkReader.EXT_DEF, HunkReader.EXT_ABS, HunkReader.EXT_RES):
                 # definition
-                log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, self._read_word())
+                sval = self._read_word()
+                log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, sval)
+                self._hunks[-1].add_symbol(sname, sval)
             elif stype in (HunkReader.EXT_REF8, HunkReader.EXT_REF16, HunkReader.EXT_REF32):
                 # reference(s)
                 nrefs = self._read_word()
@@ -251,34 +256,66 @@ class HunkReader(object):
 
 
 class Hunk(object):
-    pass
+    def __init__(self):
+        self._symbols = dict()
+        
+        
+    def add_symbol(self, sname, sval):
+        self._symbols[sname] = sval
+        
+        
+    def get_symbols(self):
+        return self._symbols.items()
 
 
 
 class CodeHunk(Hunk):
     def __init__(self, name, code):
+        Hunk.__init__(self)
         self.name = name
         self.code = code
+        self.size = len(code)
         
         
     def __repr__(self):
-        return "CodeHunk[name = %s, size = %d]" % (self.name, len(self.code))
-
-
+        return "CodeHunk[name = %s, size = %d]" % (self.name, self.size)
+    
+    
+    def merge_hunk(self, hunk):
+        offset = self.size
+        self.code += hunk.code
+        self.size = len(self.code)
+    
+    
 
 class DataHunk(Hunk):
     def __init__(self, name, data):
+        Hunk.__init__(self)
         self.name = name
         self.data = data
+        self.size = len(data)
 
 
     def __repr__(self):
-        return "DataHunk[name = %s, size = %d]" % (self.name, len(self.data))
+        return "DataHunk[name = %s, size = %d]" % (self.name, self.size)
 
 
 
 class BSSHunk(Hunk):
-    pass
+    def __init__(self, name, size):
+        Hunk.__init__(self)
+        self.name = name
+        self.size = size
+
+
+    def __repr__(self):
+        return "BSSHunk[name = %s, size = %d]" % (self.name, self.size)
+
+
+
+# types for the global database
+HunkEntry = recordclass('HunkEntry', ('hnum', 'offset', 'hunks'))
+SymEntry  = namedtuple('SymEntry', ('uname', 'hname', 'value'))
 
 
 
@@ -293,14 +330,38 @@ else:
     level = INFO
 logging.basicConfig(level = level, format = '%(levelname)s: %(message)s')
 
-cblocks         = dict()
-dblocks         = dict()
-exported_syms   = dict()
-referenced_syms = dict()
+# build symbol database and map of executable => mapping of unit + hunk name to hunk number + offset
+hunklist = dict()
+hunkmap  = dict()
+symlist  = dict()
+nhunks   = 0
 for fname in args.files:
     log(INFO, "reading object file %s", fname)
     reader = HunkReader(fname)
     reader.read()
     
     for hunk in reader.get_hunks():
-        print(hunk)
+        log(INFO, "determining where the hunk %s will be located in the executable...", hunk.name)
+        source = reader.uname + ':' + hunk.name
+        # Does a hunk with the same name already exist?
+        if hunk.name in hunklist:
+            # yes => We can merge the hunks, so we add the hunk to the list. We take the size of the
+            # existing hunk(s) as offset and add our own size.
+            hunklist[hunk.name].hunks.append(hunk)
+            target = str(hunklist[hunk.name].hnum) + ':' + str(hunklist[hunk.name].offset)
+            hunklist[hunk.name].offset += hunk.size
+        else:
+            # no  => We create a new list of hunks, offset is 0, and set our own size as offset
+            # for any following hunk with the same name
+            hunklist[hunk.name] = HunkEntry(nhunks, hunk.size, [hunk])
+            target = str(hunklist[hunk.name].hnum) + ':' + '0'
+            nhunks += 1
+        hunkmap[source] = target
+        
+        log(INFO, "adding symbols to global database...")
+        for sname, sval in hunk.get_symbols():
+            symlist[sname] = SymEntry(reader.uname, hunk.name, str(sval))
+        
+
+print(hunkmap)
+print(symlist)
