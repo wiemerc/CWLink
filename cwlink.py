@@ -9,11 +9,49 @@ from struct import pack, unpack
 from argparse import ArgumentParser
 from collections import namedtuple, OrderedDict
 from recordclass import recordclass
+from enum import IntEnum
 
 
 
-class HunkReader(object):
-    # block types from from dos/doshunks.h
+#
+# data structures
+#
+# We build a global database from the object files. The structure of the database looks like this:
+# hunks
+# |
+# --- code
+# |   |
+# |   --- <name>
+# |       |
+# |       --- hunk (unit name, content, references, relocations)
+# --- data
+# |   |
+# |   --- <name>
+# |       |
+# |       --- hunk (unit name, content)
+# --- bss
+#     |
+#     --- <name>
+#         |
+#         --- hunk (unit name)
+# symbols
+# |
+# --- <name>
+#     |
+#     --- symbol (unit name, hunk type, hunk name, offset)
+
+Hunk      = recordclass('Hunk', ('uname', 'content', 'refs', 'relocs'))
+Symbol    = recordclass('Symbol', ('uname', 'htype', 'hname', 'offset'))
+Reloc     = recordclass('Reloc', ('uname', 'htype', 'hname', 'hnum', 'offset'))
+Reference = recordclass('Reference', ('sname', 'type', 'offset'))
+DataBase  = recordclass('DataBase', ('hunks', 'symbols'))
+
+db = DataBase({'code': {}, 'data': {}, 'bss': {}}, {})
+
+
+
+# block types from from dos/doshunks.h
+class BlockType(IntEnum):
     HUNK_UNIT	  = 999
     HUNK_NAME	  = 1000
     HUNK_CODE	  = 1001
@@ -35,6 +73,9 @@ class HunkReader(object):
     HUNK_LIB	  = 1018
     HUNK_INDEX	  = 1019
     
+
+
+class ExtType(IntEnum):
     # symbol types from from dos/doshunks.h
     EXT_SYMB   = 0
     EXT_DEF	   = 1
@@ -49,35 +90,135 @@ class HunkReader(object):
     EXT_DEXT8  = 135
         
     
-    def __init__(self, fname):
+
+class HunkReader(object):
+    
+    def __init__(self, fname, db):
         self._fname = fname
+        self._db    = db
 
 
     def read(self):
         with open(self._fname, 'rb') as self._fobj:
+            
             hnum = 0
+            htype_hname = {}
             while True:
                 try:
                     btype = self._read_word()
-                    log(DEBUG, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
-                    if btype == HunkReader.HUNK_END:
-                        # possibly another hunk follows, nothing else to do
+                    log(DEBUG, "reading hunk #%d, block %s (%d)", hnum, BlockType(btype), btype)
+                    
+                    if btype == BlockType.HUNK_UNIT:
+                        uname = self._read_string(self._read_word() * 4)
+                        log(DEBUG, "unit name: %s", uname)
+                        
+                    elif btype == BlockType.HUNK_NAME:
+                        hname = self._read_string(self._read_word() * 4)
+                        log(DEBUG, "hunk name: %s", hname)
+                        
+                    elif btype == BlockType.HUNK_CODE:
+                        nwords = self._read_word()
+                        log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
+                        htype = 'code'
+                        hunk  = Hunk(uname, self._fobj.read(nwords * 4), [], [])
+                        if hname not in db.hunks['code']:
+                            self._db.hunks['code'][hname] = []
+                        self._db.hunks['code'][hname].append(hunk)
+                        
+                    elif btype == BlockType.HUNK_RELOC32:
+                        while True:
+                            noffsets = self._read_word()
+                            if noffsets == 0:
+                                break
+                            
+                            refhnum = self._read_word()
+                            log(DEBUG, "relocations referencing hunk #%d:", refhnum)
+                            for i in range(0, noffsets):
+                                offset = self._read_word()
+                                log(DEBUG, "offset = 0x%08x", offset)
+                                hunk.relocs.append(Reloc(uname, '', '', refhnum, offset))
+                        
+                    elif btype == BlockType.HUNK_EXT:
+                        while True:
+                            type_len = self._read_word()
+                            if type_len == 0:
+                                break
+                            
+                            stype = (type_len & 0xff000000) >> 24
+                            sname = self._read_string((type_len & 0x00ffffff) * 4)
+                            
+                            if stype in (ExtType.EXT_DEF, ExtType.EXT_ABS, ExtType.EXT_RES):
+                                # definition
+                                # TODO: What about EXT_ABS and EXT_RES?
+                                sval = self._read_word()
+                                log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, sval)
+                                self._db.symbols[sname] = Symbol(uname, htype, hname, sval)
+                            elif stype in (ExtType.EXT_REF8, ExtType.EXT_REF16, ExtType.EXT_REF32):
+                                # reference(s)
+                                nrefs = self._read_word()
+                                for i in range(0, nrefs):
+                                    offset = self._read_word()
+                                    log(DEBUG, "reference to symbol %s (type = %d): 0x%08x", sname, stype, offset)
+                                    hunk.refs.append(Reference(sname, stype, offset))
+                            else:
+                                log(ERROR, "symbol type %d not supported", stype)
+                        
+                    elif btype == BlockType.HUNK_DATA:
+                        nwords = self._read_word()
+                        log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
+                        htype = 'data'
+                        hunk  = Hunk(uname, self._fobj.read(nwords * 4), [], [])
+                        if hname not in db.hunks['data']:
+                            self._db.hunks['data'][hname] = []
+                        self._db.hunks['data'][hname].append(hunk)
+                        
+                    elif btype == BlockType.HUNK_BSS:
+                        nwords = self._read_word()
+                        log(DEBUG, "size (in bytes) of BSS block: %d", nwords * 4)
+                        htype = 'bss'
+                        hunk  = Hunk(uname, '', [], [])
+                        if hname not in db.hunks['bss']:
+                            self._db.hunks['bss'][hname] = []
+                        self._db.hunks['bss'][hname].append(hunk)
+                        
+                    elif btype == BlockType.HUNK_SYMBOL:
+                        while True:
+                            nwords = self._read_word()
+                            if nwords == 0:
+                                break
+            
+                            sname = self._read_string(nwords * 4)
+                            sval  = self._read_word()
+                            log(DEBUG, "symbol %s = 0x%08x", sname, sval)
+                        
+                    elif btype == BlockType.HUNK_END:
                         log(DEBUG, "hunk #%d finished", hnum)
+                        # We need to store the hunk type and name together for the hunk number so that we can
+                        # normalize the relocations later
+                        htype_hname[hnum] = htype + ':' + hname
                         hnum += 1
-                        continue
+                        
                     else:
-                        HunkReader._read_funcs[btype](self)
+                        log(ERROR, "block type %s not known or implemented", ex)
+                        break
                         
                 except EOFError:
-                    if btype == HunkReader.HUNK_END:
-                        return self._unit
+                    if btype == BlockType.HUNK_END:
+                        # Once we have read all the hunks in this unit, we can normalize the relocations
+                        log(DEBUG, "normalizing relocations...")
+                        for hname in self._db.hunks['code']:
+                            for hunk in self._db.hunks['code'][hname]:
+                                if hunk.uname != uname:
+                                    # only the hunks from this unit
+                                    continue
+                                for reloc in hunk.relocs:
+                                    refhtype, refhname = htype_hname[reloc.hnum].split(':')
+                                    reloc.htype = refhtype
+                                    reloc.hname = refhname
+                        return
                     else:
                         log(ERROR, "encountered EOF while reading file '%s'", self.fname)
                         return
-                        
-                except KeyError as ex:
-                    log(ERROR, "block type %s not known or implemented", ex)
-                    break
     
     
     def _read_word(self):
@@ -94,227 +235,9 @@ class HunkReader(object):
             return unpack('%ds' % nchars, buffer)[0].decode('ascii').replace('\x00', '')
         else:
             return EOFError
-    
-    
-    def _read_unit_block(self):
-        log(INFO, "reading HUNK_UNIT block...")
-        self._uname = self._read_string(self._read_word() * 4)
-        self._unit  = Unit(self._uname)
-        log(INFO, "unit name: %s", self._uname)
         
         
-    def _read_name_block(self):
-        log(INFO, "reading HUNK_NAME block...")
-        # A HUNK_NAME block always starts a new hunk, but we don't know yet what kind of hunk it will be,
-        # so we just store the name for now.
-        self._hname = self._read_string(self._read_word() * 4)
-        log(INFO, "hunk name: %s", self._hname)
         
-        
-    def _read_code_block(self):
-        log(INFO, "reading HUNK_CODE block...")
-        nwords = self._read_word()
-        log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
-        self._hunk = CodeHunk(self._hname, self._fobj.read(nwords * 4))
-        self._unit.add_hunk(self._hunk)
-        
-        
-    def _read_data_block(self):
-        log(INFO, "reading HUNK_DATA block...")
-        nwords = self._read_word()
-        log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
-        self._hunk = DataHunk(self._hname, self._fobj.read(nwords * 4))
-        self._unit.add_hunk(self._hunk)
-        
-        
-    def _read_bss_block(self):
-        log(INFO, "reading HUNK_BSS block...")
-        nwords = self._read_word()
-        log(DEBUG, "size (in bytes) of BSS block: %d", nwords * 4)
-        self._hunk = BSSHunk(self._hname, nwords * 4)
-        self._unit.add_hunk(self._hunk)
-        
-        
-    def _read_ext_block(self):
-        log(INFO, "reading HUNK_EXT block...")
-        while True:
-            type_len = self._read_word()
-            if type_len == 0:
-                break
-            
-            stype = (type_len & 0xff000000) >> 24
-            sname = self._read_string((type_len & 0x00ffffff) * 4)
-            
-            if stype in (HunkReader.EXT_DEF, HunkReader.EXT_ABS, HunkReader.EXT_RES):
-                # definition
-                sval = self._read_word()
-                log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, sval)
-                self._hunk.add_symbol(sname, stype, sval)
-            elif stype in (HunkReader.EXT_REF8, HunkReader.EXT_REF16, HunkReader.EXT_REF32):
-                # reference(s)
-                nrefs = self._read_word()
-                for i in range(0, nrefs):
-                    refloc = self._read_word()
-                    log(DEBUG, "reference to symbol %s (type = %d): 0x%08x", sname, stype, refloc)
-                    self._hunk.add_ref(sname, stype, refloc)
-            else:
-                log(ERROR, "symbol type %d not supported", stype)
-        
-        
-    def _read_symbol_block(self):
-        log(INFO, "reading HUNK_SYMBOL block...")
-        while True:
-            nwords = self._read_word()
-            if nwords == 0:
-                break
-            
-            sname = self._read_string(nwords * 4)
-            sval  = self._read_word()
-            log(DEBUG, "%s = 0x%08x", sname, sval)
-        
-        
-    def _read_reloc32_block(self):
-        log(INFO, "reading HUNK_RELOC32 block...")
-        while True:
-            noffsets = self._read_word()
-            if noffsets == 0:
-                break
-            
-            refhnum = self._read_word()
-            log(DEBUG, "relocations referencing hunk #%d:", refhnum)
-            for i in range(0, noffsets):
-                offset = self._read_word()
-                log(DEBUG, "offset = 0x%08x", offset)
-                self._hunk.add_reloc(refhnum, offset)
-            
-        
-    _read_funcs = dict()
-    _read_funcs[HUNK_UNIT]    = _read_unit_block
-    _read_funcs[HUNK_NAME]    = _read_name_block
-    _read_funcs[HUNK_CODE]    = _read_code_block
-    _read_funcs[HUNK_DATA]    = _read_data_block
-    _read_funcs[HUNK_BSS]     = _read_bss_block
-    _read_funcs[HUNK_EXT]     = _read_ext_block
-    _read_funcs[HUNK_SYMBOL]  = _read_symbol_block
-    _read_funcs[HUNK_RELOC32] = _read_reloc32_block
-
-
-
-class Unit(object):
-    def __init__(self, uname):
-        self.name  = uname
-        self.hunks = list()
-        
-        
-    def add_hunk(self, hunk):
-        self.hunks.append(hunk)
-        
-        
-    def normalize_relocs(self):
-        mapping = dict()
-        for i in range(0, len(self.hunks)):
-            mapping[i] = self.name + ':' + self.hunks[i].name
-            
-        for hunk in self.hunks:
-            hunk.normalize_relocs(mapping)
-                
-                
-
-class Hunk(object):
-    Symbol = namedtuple('Symbol', ('stype', 'sval'))
-    Reference = namedtuple('Reference', ('sname', 'rtype', 'rloc'))
-    
-    
-    def __init__(self):
-        self._symbols = dict()
-        self._refs    = list()
-        self._relocs  = dict()
-        
-        
-    def add_symbol(self, sname, stype, sval):
-        self._symbols[sname] = Hunk.Symbol(stype, sval)
-        
-        
-    def add_ref(self, sname, rtype, rloc):
-        self._refs.append(Hunk.Reference(sname, rtype, rloc))
-        
-        
-    def add_reloc(self, hnum, offset):
-        if hnum not in self._relocs:
-            self._relocs[hnum] = list()
-        self._relocs[hnum].append(offset)
-        
-        
-    def get_symbols(self):
-        return self._symbols.items()
-        
-        
-    def get_refs(self):
-        return self._refs.__iter__()
-    
-    def get_relocs(self):
-        for href in self._relocs:
-            for offset in self._relocs[href]:
-                yield href, offset
-                
-                
-    def normalize_relocs(self, mapping):
-        for hnum in self._relocs:
-            if hnum in mapping:
-                self._relocs[mapping[hnum]] = self._relocs.pop(hnum)
-
-
-
-class CodeHunk(Hunk):
-    def __init__(self, name, code):
-        Hunk.__init__(self)
-        self.name = name
-        self.code = code
-        self.size = len(code)
-        
-        
-    def __repr__(self):
-        return "CodeHunk(name = %s, size = %d)" % (self.name, self.size)
-    
-    
-    def merge_hunk(self, hunk):
-        offset = self.size
-        self.code += hunk.code
-        self.size = len(self.code)
-    
-    
-
-class DataHunk(Hunk):
-    def __init__(self, name, data):
-        Hunk.__init__(self)
-        self.name = name
-        self.data = data
-        self.size = len(data)
-
-
-    def __repr__(self):
-        return "DataHunk(name = %s, size = %d)" % (self.name, self.size)
-
-
-
-class BSSHunk(Hunk):
-    def __init__(self, name, size):
-        Hunk.__init__(self)
-        self.name = name
-        self.size = size
-
-
-    def __repr__(self):
-        return "BSSHunk(name = %s, size = %d)" % (self.name, self.size)
-
-
-
-# types for the global database
-HunkEntry = recordclass('HunkEntry', ('hnum', 'offset', 'hunks'))
-SymEntry  = namedtuple('SymEntry', ('uname', 'hname', 'sval'))
-
-
-
 #
 # main program
 #
@@ -340,9 +263,9 @@ symlist  = dict()
 nhunks   = 0
 for fname in args.files:
     log(INFO, "reading object file %s", fname)
-    reader = HunkReader(fname)
-    unit = reader.read()
-    unit.normalize_relocs()
+    reader = HunkReader(fname, db)
+    reader.read()
+    continue
     
     for hunk in unit.hunks:
         log(INFO, "determining where the hunk %s will be located in the executable...", hunk.name)
@@ -367,8 +290,8 @@ for fname in args.files:
         for sname, sym in hunk.get_symbols():
             symlist[sname] = SymEntry(unit.name, hunk.name, str(sym.sval))
         
-print(hunkmap)
-print(symlist)
+print(db)
+sys.exit()
 
 
 #
@@ -378,6 +301,7 @@ for hname, hentry in hunklist.items():
     log(INFO, "building final hunk %s...", hname)
     for hunk in hentry.hunks:
         log(DEBUG, "adding hunk %s", hunk)
+        # resolve references
         for ref in hunk.get_refs():
             if ref.sname in symlist:
                 rentry = symlist[ref.sname]
