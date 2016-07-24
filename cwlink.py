@@ -16,6 +16,7 @@ from enum import IntEnum
 #
 # data structures
 #
+# TODO: Maybe we should use a class for the database?
 # We build a global database from the object files. The structure of the database looks like this:
 # hunks
 # |
@@ -251,6 +252,31 @@ if args.verbose:
 else:
     level = INFO
 logging.basicConfig(level = level, format = '%(levelname)s: %(message)s')
+
+
+# read object files and build database
+# TODO: The read() method could return a database for the object file and we could merge these partial databases.
+for fname in args.files:
+    log(INFO, "reading object file %s...", fname)
+    reader = HunkReader(fname, db)
+    reader.read()
+
+
+# resolve references to relocations
+log(INFO, "resolving references...")
+for hname in db.hunks['code']:
+    for hunk in db.hunks['code'][hname]:
+        log(DEBUG, "processing hunk %s in unit %s...", hname, hunk.uname)
+        for ref in hunk.refs:
+            if ref.sname in db.symbols:
+                sym   = db.symbols[ref.sname]
+                reloc = Reloc(sym.uname, sym.htype, sym.hname, -1, sym.offset)
+                log(DEBUG, "adding relocation %s for referenced symbol %s", reloc, ref.sname)
+                hunk.relocs.append(reloc)
+            else:
+                log(ERROR, "undefined symbol %s", ref.sname)
+            
+sys.exit()
 
 
 #
