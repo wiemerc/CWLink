@@ -121,7 +121,7 @@ class HunkReader(object):
                         nwords = self._read_word()
                         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
                         htype = 'code'
-                        hunk  = Hunk(uname, self._fobj.read(nwords * 4), [], [])
+                        hunk  = Hunk(uname, bytearray(self._fobj.read(nwords * 4)), [], [])
                         if hname not in db.hunks['code']:
                             self._db.hunks['code'][hname] = []
                         self._db.hunks['code'][hname].append(hunk)
@@ -168,7 +168,7 @@ class HunkReader(object):
                         nwords = self._read_word()
                         log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
                         htype = 'data'
-                        hunk  = Hunk(uname, self._fobj.read(nwords * 4), [], [])
+                        hunk  = Hunk(uname, bytearray(self._fobj.read(nwords * 4)), [], [])
                         if hname not in db.hunks['data']:
                             self._db.hunks['data'][hname] = []
                         self._db.hunks['data'][hname].append(hunk)
@@ -281,9 +281,11 @@ for hname in db.hunks['code']:
         for ref in hunk.refs:
             if ref.sname in db.symbols:
                 sym   = db.symbols[ref.sname]
-                reloc = Reloc(sym.uname, sym.htype, sym.hname, -1, sym.offset)
+                reloc = Reloc(sym.uname, sym.htype, sym.hname, -1, ref.offset)
                 log(DEBUG, "adding relocation %s for referenced symbol %s", reloc, ref.sname)
                 hunk.relocs.append(reloc)
+                log(DEBUG, "writing symbol offset 0x%08x at offset 0x%08x", sym.offset, ref.offset)
+                hunk.content[ref.offset:ref.offset + 4] = pack('>L', sym.offset)
             else:
                 log(ERROR, "undefined symbol %s", ref.sname)
 
