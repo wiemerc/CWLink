@@ -45,9 +45,9 @@ Hunk      = recordclass('Hunk', ('uname', 'content', 'refs', 'relocs'))
 Symbol    = recordclass('Symbol', ('uname', 'htype', 'hname', 'offset'))
 Reloc     = recordclass('Reloc', ('uname', 'htype', 'hname', 'hnum', 'offset'))
 Reference = recordclass('Reference', ('sname', 'type', 'offset'))
-DataBase  = recordclass('DataBase', ('hunks', 'symbols'))
+DataBase  = recordclass('DataBase', ('hunks', 'symbols', 'map'))
 
-db = DataBase({'code': {}, 'data': {}, 'bss': {}}, {})
+db = DataBase(hunks = {'code': {}, 'data': {}, 'bss': {}}, symbols = {}, map = {})
 
 
 
@@ -239,6 +239,17 @@ class HunkReader(object):
         
         
         
+class HunkWriter(object):
+    def __init__(self, fname, db):
+        self._fname = fname
+        self._db    = db
+        
+        
+    def write(self):
+        pass
+    
+    
+    
 #
 # main program
 #
@@ -275,73 +286,26 @@ for hname in db.hunks['code']:
                 hunk.relocs.append(reloc)
             else:
                 log(ERROR, "undefined symbol %s", ref.sname)
+
+
+# build map of executable => mapping of unit name + hunk type + hunk name to hunk number + displacement
+# We assume here that in each unit there exists only *one* hunk with a certain type / name combination. I don't know
+# if this is always the case...
+log(INFO, "building map of executable...")
+hnum = 0
+for htype in ('code', 'data', 'bss'):
+    for hname in db.hunks[htype]:
+        disp = 0
+        for hunk in db.hunks[htype][hname]:
+            source = hunk.uname + ':' + htype + ':' + hname
+            target = str(hnum) + ':' + str(disp)
+            log(DEBUG, "mapping hunk %s to %s", source, target)
+            db.map[source] = target
+            disp += len(hunk.content)
+        hnum += 1
             
-sys.exit()
 
-
-#
-# build symbol database and map of executable => mapping of unit + hunk name to hunk number + offset
-#
-# We need to use an OrderedDict here so that the hunk names correspond with the hunk numbers
-hunklist = OrderedDict()
-hunkmap  = dict()
-symlist  = dict()
-nhunks   = 0
-for fname in args.files:
-    log(INFO, "reading object file %s", fname)
-    reader = HunkReader(fname, db)
-    reader.read()
-    continue
-    
-    for hunk in unit.hunks:
-        log(INFO, "determining where the hunk %s will be located in the executable...", hunk.name)
-        source = unit.name + ':' + hunk.name
-        # Does a hunk with the same name already exist?
-        if hunk.name in hunklist:
-            # yes => We can merge the hunks, so we add the hunk to the list. We take the size of the
-            # existing hunk(s) as offset and add our own size.
-            hunklist[hunk.name].hunks.append(hunk)
-            target = str(hunklist[hunk.name].hnum) + ':' + str(hunklist[hunk.name].offset)
-            hunklist[hunk.name].offset += hunk.size
-        else:
-            # no  => We create a new list of hunks, offset is 0, and set our own size as offset
-            # for any following hunk with the same name
-            hunklist[hunk.name] = HunkEntry(nhunks, hunk.size, [hunk])
-            target = str(hunklist[hunk.name].hnum) + ':' + '0'
-            nhunks += 1
-        hunkmap[source] = target
-        
-        log(INFO, "adding symbols to global database...")
-        # TODO: What do we do with the different symbol types?
-        for sname, sym in hunk.get_symbols():
-            symlist[sname] = SymEntry(unit.name, hunk.name, str(sym.sval))
-        
-print(db)
-sys.exit()
-
-
-#
-# build executable
-#
-for hname, hentry in hunklist.items():
-    log(INFO, "building final hunk %s...", hname)
-    for hunk in hentry.hunks:
-        log(DEBUG, "adding hunk %s", hunk)
-        # resolve references
-        for ref in hunk.get_refs():
-            if ref.sname in symlist:
-                rentry = symlist[ref.sname]
-                hnum, offset = hunkmap[rentry.uname + ':' + rentry.hname].split(':')
-                hnum   = int(hnum)
-                offset = int(offset)
-                log(DEBUG, "adding reloc for symbol '%s' at location 0x%08x referencing hunk #%d with offset (symbol value + offset in hunk) %d + %d",
-                    ref.sname, ref.rloc, hnum, int(rentry.sval), offset)
-                hunk.add_reloc(hnum, ref.rloc)
-                # TODO: add offset at the specified location in the code
-            else:
-                log(ERROR, "undefined symbol: %s", ref.sname)
-                
-        # TODO: normalize (hunk number => unit name + hunk name) relocations, so we can add the necessary offsets
-        log(DEBUG, "relocations in this hunk:")
-        for href, offset in hunk.get_relocs():
-            log(DEBUG, "hunk %s, offset = 0x%08x", href, offset)
+# write executable
+log(INFO, "writing executable %s...", args.ofname)
+writer = HunkWriter(args.ofname, db)
+writer.write()
