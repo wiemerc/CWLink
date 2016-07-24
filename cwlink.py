@@ -246,10 +246,36 @@ class HunkWriter(object):
         
         
     def write(self):
-        pass
+        with open(self._fname, 'wb') as self._fobj:
+            self._write_word(BlockType.HUNK_HEADER)     # block type
+            self._write_word(0)                         # number of words reserved for resident libraries
+            
+            hnum = 0
+            hsizes = []
+            for htype in ('code', 'data', 'bss'):
+                for hname in db.hunks[htype]:
+                    hsize = 0
+                    for hunk in db.hunks[htype][hname]:
+                        # TODO: add size attribute to hunk objects for BSS
+                        hsize += len(hunk.content)
+                    hsize += hsize % 4
+                    log(DEBUG, "(padded) size of hunk %s:%s = %d", htype, hname, hsize)
+                    hsizes.append(hsize)
+                    hnum += 1
+            log(DEBUG, "number of hunks in executable = %d", hnum)
+            
+            self._write_word(hnum)                      # number of hunks
+            self._write_word(0)                         # number of first hunk
+            self._write_word(hnum - 1)                  # number of last hunk
+            for i in range(0, hnum):
+                self._write_word(int(hsizes[i] / 4))    # size of hunk in words
+
     
+    def _write_word(self, word):
+        self._fobj.write(pack('>L', word))
     
-    
+
+
 #
 # main program
 #
@@ -292,7 +318,7 @@ for hname in db.hunks['code']:
 
 # build map of executable => mapping of unit name + hunk type + hunk name to hunk number + displacement
 # We assume here that in each unit there exists only *one* hunk with a certain type / name combination. I don't know
-# if this is always the case...
+# if this is always the case... Otherwise we would need to add the original hunk number to the key.
 log(INFO, "building map of executable...")
 hnum = 0
 for htype in ('code', 'data', 'bss'):
