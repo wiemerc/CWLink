@@ -284,8 +284,12 @@ class HunkWriter(object):
                     # value in the relocations)
                     for reloc in hunk.relocs:
                         hnum, disp = db.map[reloc.uname + ':' + reloc.htype + ':' + reloc.hname].split(':')
-                        hunk.content[ref.offset:ref.offset + 4] = pack('>L',
-                            unpack('>L', hunk.content[ref.offset:ref.offset + 4])[0] + int(disp))
+                        disp = int(disp)
+                        if disp > 0:
+                            log(DEBUG, "patching patching position 0x%08x in hunk %s:code:%s (reloc = %s, displacement = %d)",
+                                reloc.offset, hunk.uname, hname, reloc, disp)
+                            hunk.content[reloc.offset:reloc.offset + 4] = pack('>L',
+                                unpack('>L', hunk.content[reloc.offset:reloc.offset + 4])[0] + disp)
                         
                     # merge hunks with the same name and add the displacement of this hunk to the offset value in the relocations
                     hsize  += len(hunk.content)
@@ -368,7 +372,7 @@ for hname in db.hunks['code']:
 # if this is always the case... Otherwise we would need to add the original hunk number to the key.
 log(INFO, "building map of executable...")
 hnum = 0
-for htype in ('code', 'data', 'bss'):
+for htype in ('code', 'bss', 'data'):
     for hname in db.hunks[htype]:
         disp = 0
         for hunk in db.hunks[htype][hname]:
