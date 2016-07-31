@@ -247,18 +247,20 @@ class HunkWriter(object):
         
     def write(self):
         with open(self._fname, 'wb') as self._fobj:
+            # header
             self._write_word(BlockType.HUNK_HEADER)     # block type
             self._write_word(0)                         # number of words reserved for resident libraries
             
             hnum = 0
             hsizes = []
-            for htype in ('code', 'data', 'bss'):
-                for hname in db.hunks[htype]:
+            for htype in ('code', 'bss', 'data'):
+                for hname in sorted(db.hunks[htype]):
                     hsize = 0
                     for hunk in db.hunks[htype][hname]:
                         # TODO: add size attribute to hunk objects for BSS
                         hsize += len(hunk.content)
-                    hsize += hsize % 4
+                    if hsize % 4 > 0:
+                        hsize += 4 - hsize % 4
                     log(DEBUG, "(padded) size of hunk %s:%s = %d", htype, hname, hsize)
                     hsizes.append(hsize)
                     hnum += 1
@@ -269,8 +271,53 @@ class HunkWriter(object):
             self._write_word(hnum - 1)                  # number of last hunk
             for i in range(0, hnum):
                 self._write_word(int(hsizes[i] / 4))    # size of hunk in words
+                
+                
+            # code + relocations
+            for hname in db.hunks['code']:
+                self._write_word(BlockType.HUNK_CODE)   # block type
+                hsize  = 0
+                code   = bytearray()
+                all_relocs = []
+                for hunk in db.hunks['code'][hname]:
+                    # add the displacement of the referenced hunk to the symbol value in the code (position is the offset
+                    # value in the relocations)
+                    for reloc in hunk.relocs:
+                        hnum, disp = db.map[reloc.uname + ':' + reloc.htype + ':' + reloc.hname].split(':')
+                        hunk.content[ref.offset:ref.offset + 4] = pack('>L',
+                            unpack('>L', hunk.content[ref.offset:ref.offset + 4])[0] + int(disp))
+                        
+                    # merge hunks with the same name and add the displacement of this hunk to the offset value in the relocations
+                    hsize  += len(hunk.content)
+                    code   += hunk.content
+                    hnum, disp = db.map[hunk.uname + ':code:' + hname].split(':')
+                    for reloc in hunk.relocs:
+                        reloc.offset += int(disp)
+                        all_relocs.append(reloc)
+                    
+                if hsize % 4 > 0:
+                    hsize += 4 - hsize % 4
+                log(DEBUG, "(padded) size of code hunk %s = %d", hname, hsize)
+                self._write_word(int(hsize / 4))        # size of hunk in words
+                self._fobj.write(code)                  # code
+                
+                self._write_word(BlockType.HUNK_RELOC32)    # block type
+                for htype in ('code', 'bss', 'data'):
+                    hnames = set([reloc.hname for reloc in all_relocs if reloc.htype == htype])
+                    for hname in sorted(hnames):
+                        relocs = [reloc for reloc in all_relocs if reloc.htype == htype and reloc.hname == hname]
+                        log(DEBUG, "%d relocations referencing hunk %s:%s", len(relocs), htype, hname)
+                        self._write_word(len(relocs))       # number of offsets
+                        # We assume here that all hunks with the same type and name have the same hunk number
+                        # (only the displacements differ).
+                        hnum, disp = db.map[relocs[0].uname + ':' + htype + ':' + hname].split(':')
+                        self._write_word(int(hnum))         # number of referenced hunk
+                        for reloc in relocs:
+                            self._write_word(reloc.offset)
+                self._write_word(0)                         # end of list
+                self._write_word(BlockType.HUNK_END)        # end of hunk
+                    
 
-    
     def _write_word(self, word):
         self._fobj.write(pack('>L', word))
     
