@@ -1,45 +1,40 @@
 #!/usr/bin/env python3
 
 
+
 import sys
 import logging
 from logging import log, DEBUG, INFO, WARN, ERROR, CRITICAL
 from struct import pack, unpack
 
 
-# std::string hexdump (const uint8_t *buffer, size_t length)
-# {
-#     std::string dump;
-#     size_t pos = 0;
-# 
-#     while (pos < length)
-#     {
-#         dump += Poco::format ("%04?x: ", pos);
-#         std::string line;
-#         for (size_t i = pos; (i < pos + 16) && (i < length); i++)
-#         {
-#             dump += Poco::format ("%02?x ", buffer[i]);
-#             if (buffer[i] >= 0x20 && buffer[i] <= 0x7e)
-#             {
-#                 line.append (1, buffer[i]);
-#             }
-#             else
-#             {
-#                 line.append (1, '.');
-#             }
-#         }
-#         if (line.size() < 16)
-#             dump.append (3 * (16 - line.size()), ' ');
-# 
-#         dump.append (1, '\t');
-#         dump += line;
-#         dump.append (1, '\n');
-#         pos += 16;
-#     }
-#     return dump;
-# }
 
-
+def hexdump(buffer):
+    dump = ''
+    pos  = 0
+    while (pos < len(buffer)):
+        dump += '%04x  ' % pos
+        line = ''
+        for i in range(pos, pos + 16):
+            if i >= len(buffer):
+                break
+            
+            dump += '%02x ' % buffer[i]
+            if buffer[i] >= 0x20 and buffer[i] <= 0x7e:
+                line += chr(buffer[i])
+            else:
+                line += '.'
+                
+        if len(line) < 16:
+            dump += ' ' * 3 * (16 - len(line))
+            
+        dump += '\t' + line + '\n'
+        pos += 16
+        
+    return dump
+        
+        
+        
 class HunkReader(object):
     # file types
     FILE_EXE = 1
@@ -123,10 +118,10 @@ class HunkReader(object):
     def _read_string(self, nchars):
         buffer = self._fobj.read(nchars)
         if buffer:
-            # TODO: remove trailing NUL bytes
-            return unpack('%ds' % nchars, buffer)[0]
+            return unpack('%ds' % nchars, buffer)[0].decode('ascii').replace('\x00', '')
         else:
             return EOFError
+
     
     
     def _read_header_block(self):
@@ -157,8 +152,8 @@ class HunkReader(object):
         log(INFO, "reading HUNK_CODE block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
-        # TODO: create hexdump with the addresses to be relocated highlighted
-        self._fobj.read(nwords * 4)
+        # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
+        log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read(nwords * 4)))
         
         
     def _read_data_block(self):
@@ -168,10 +163,11 @@ class HunkReader(object):
         # Both the AmigaDOS manual and the Amiga Guru book say that after the length word only the data
         # itself and nothing else follows, but it seems in executables there always comes a zero word
         # after the data...
+        # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
         if self.ftype == HunkReader.FILE_EXE:
-            self._fobj.read((nwords + 1) * 4)
+            log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read((nwords  + 1) * 4)))
         else:
-            self._fobj.read(nwords * 4)
+            log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read(nwords * 4)))
         
         
     def _read_bss_block(self):
