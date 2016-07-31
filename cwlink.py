@@ -177,7 +177,9 @@ class HunkReader(object):
                         nwords = self._read_word()
                         log(DEBUG, "size (in bytes) of BSS block: %d", nwords * 4)
                         htype = 'bss'
-                        hunk  = Hunk(uname, '', [], [])
+                        # TODO: Setting the content of the hunk to a string of null bytes is sort of a hack and a waste of
+                        # memory. It would be better if we stored the size of the content explicitly.
+                        hunk  = Hunk(uname, b'\x00' * nwords * 4, [], [])
                         if hname not in db.hunks['bss']:
                             self._db.hunks['bss'][hname] = []
                         self._db.hunks['bss'][hname].append(hunk)
@@ -248,8 +250,8 @@ class HunkWriter(object):
     def write(self):
         with open(self._fname, 'wb') as self._fobj:
             # header
-            self._write_word(BlockType.HUNK_HEADER)     # block type
-            self._write_word(0)                         # number of words reserved for resident libraries
+            self._write_word(BlockType.HUNK_HEADER)             # block type
+            self._write_word(0)                                 # number of words reserved for resident libraries
             
             hnum = 0
             hsizes = []
@@ -257,7 +259,6 @@ class HunkWriter(object):
                 for hname in sorted(db.hunks[htype]):
                     hsize = 0
                     for hunk in db.hunks[htype][hname]:
-                        # TODO: add size attribute to hunk objects for BSS
                         hsize += len(hunk.content)
                     if hsize % 4 > 0:
                         hsize += 4 - hsize % 4
@@ -273,8 +274,8 @@ class HunkWriter(object):
                 self._write_word(int(hsizes[i] / 4))            # size of hunk in words
                 
                 
-            # code / data + relocations
-            for htype, btype in (('code', BlockType.HUNK_CODE), ('data', BlockType.HUNK_DATA)):
+            # code / data / BSS + relocations
+            for htype, btype in (('code', BlockType.HUNK_CODE), ('bss', BlockType.HUNK_BSS), ('data', BlockType.HUNK_DATA)):
                 for hname in db.hunks[htype]:
                     self._write_word(btype)                     # block type
                     hsize      = 0
@@ -304,27 +305,32 @@ class HunkWriter(object):
                         hsize += 4 - hsize % 4
                     log(DEBUG, "(padded) size of hunk %s:%s = %d", htype, hname, hsize)
                     self._write_word(int(hsize / 4))            # size of hunk in words
-                    self._fobj.write(content)                   # content
+                    if htype != 'bss':
+                        self._fobj.write(content)               # content
+                        
                     # Both the AmigaDOS manual and the Amiga Guru book state that after the length word only the data
                     # itself and nothing else follows, but it seems in executables the data is always followed by a null word...
                     if htype == 'data':
                         self._write_word(0)
                     
-                    self._write_word(BlockType.HUNK_RELOC32)    # block type
-                    for htype in ('code', 'bss', 'data'):
-                        hnames = set([reloc.hname for reloc in all_relocs if reloc.htype == htype])
-                        for hname in sorted(hnames):
-                            relocs = [reloc for reloc in all_relocs if reloc.htype == htype and reloc.hname == hname]
-                            log(DEBUG, "%d relocations referencing hunk %s:%s", len(relocs), htype, hname)
-                            self._write_word(len(relocs))       # number of offsets
-                            # We assume here that all hunks with the same type and name have the same hunk number
-                            # (only the displacements differ).
-                            hnum, disp = db.map[relocs[0].uname + ':' + htype + ':' + hname].split(':')
-                            self._write_word(int(hnum))         # number of referenced hunk
-                            for reloc in relocs:
-                                self._write_word(reloc.offset)
-                    self._write_word(0)                         # end of list
-                    self._write_word(BlockType.HUNK_END)        # end of hunk
+                    # It doesn't hurt to have empty HUNK_RELOC32 blocks but we avoid them anyway.
+                    if all_relocs:
+                        self._write_word(BlockType.HUNK_RELOC32)    # block type
+                        for htype in ('code', 'bss', 'data'):
+                            hnames = set([reloc.hname for reloc in all_relocs if reloc.htype == htype])
+                            for hname in sorted(hnames):
+                                relocs = [reloc for reloc in all_relocs if reloc.htype == htype and reloc.hname == hname]
+                                log(DEBUG, "%d relocations referencing hunk %s:%s", len(relocs), htype, hname)
+                                self._write_word(len(relocs))       # number of offsets
+                                # We assume here that all hunks with the same type and name have the same hunk number
+                                # (only the displacements differ).
+                                hnum, disp = db.map[relocs[0].uname + ':' + htype + ':' + hname].split(':')
+                                self._write_word(int(hnum))         # number of referenced hunk
+                                for reloc in relocs:
+                                    self._write_word(reloc.offset)
+                        self._write_word(0)                         # end of list
+                    self._write_word(BlockType.HUNK_END)            # end of hunk
+                    
                     
 
     def _write_word(self, word):
