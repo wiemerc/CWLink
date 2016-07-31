@@ -266,60 +266,65 @@ class HunkWriter(object):
                     hnum += 1
             log(DEBUG, "number of hunks in executable = %d", hnum)
             
-            self._write_word(hnum)                      # number of hunks
-            self._write_word(0)                         # number of first hunk
-            self._write_word(hnum - 1)                  # number of last hunk
+            self._write_word(hnum)                              # number of hunks
+            self._write_word(0)                                 # number of first hunk
+            self._write_word(hnum - 1)                          # number of last hunk
             for i in range(0, hnum):
-                self._write_word(int(hsizes[i] / 4))    # size of hunk in words
+                self._write_word(int(hsizes[i] / 4))            # size of hunk in words
                 
                 
-            # code + relocations
-            for hname in db.hunks['code']:
-                self._write_word(BlockType.HUNK_CODE)   # block type
-                hsize  = 0
-                code   = bytearray()
-                all_relocs = []
-                for hunk in db.hunks['code'][hname]:
-                    # add the displacement of the referenced hunk to the symbol value in the code (position is the offset
-                    # value in the relocations)
-                    for reloc in hunk.relocs:
-                        hnum, disp = db.map[reloc.uname + ':' + reloc.htype + ':' + reloc.hname].split(':')
-                        disp = int(disp)
-                        if disp > 0:
-                            log(DEBUG, "patching patching position 0x%08x in hunk %s:code:%s (reloc = %s, displacement = %d)",
-                                reloc.offset, hunk.uname, hname, reloc, disp)
-                            hunk.content[reloc.offset:reloc.offset + 4] = pack('>L',
-                                unpack('>L', hunk.content[reloc.offset:reloc.offset + 4])[0] + disp)
+            # code / data + relocations
+            for htype, btype in (('code', BlockType.HUNK_CODE), ('data', BlockType.HUNK_DATA)):
+                for hname in db.hunks[htype]:
+                    self._write_word(btype)                     # block type
+                    hsize      = 0
+                    content    = bytearray()
+                    all_relocs = []
+                    for hunk in db.hunks[htype][hname]:
+                        # add the displacement of the referenced hunk to the symbol value in the content (position is the offset
+                        # value in the relocations)
+                        for reloc in hunk.relocs:
+                            hnum, disp = db.map[reloc.uname + ':' + reloc.htype + ':' + reloc.hname].split(':')
+                            disp = int(disp)
+                            if disp > 0:
+                                log(DEBUG, "patching patching position 0x%08x in hunk %s:%s:%s (reloc = %s, displacement = %d)",
+                                    reloc.offset, hunk.uname, htype, hname, reloc, disp)
+                                hunk.content[reloc.offset:reloc.offset + 4] = pack('>L',
+                                    unpack('>L', hunk.content[reloc.offset:reloc.offset + 4])[0] + disp)
+                            
+                        # merge hunks with the same name and add the displacement of this hunk to the offset value in the relocations
+                        hsize   += len(hunk.content)
+                        content += hunk.content
+                        hnum, disp = db.map[hunk.uname + ':' + htype + ':' + hname].split(':')
+                        for reloc in hunk.relocs:
+                            reloc.offset += int(disp)
+                            all_relocs.append(reloc)
                         
-                    # merge hunks with the same name and add the displacement of this hunk to the offset value in the relocations
-                    hsize  += len(hunk.content)
-                    code   += hunk.content
-                    hnum, disp = db.map[hunk.uname + ':code:' + hname].split(':')
-                    for reloc in hunk.relocs:
-                        reloc.offset += int(disp)
-                        all_relocs.append(reloc)
+                    if hsize % 4 > 0:
+                        hsize += 4 - hsize % 4
+                    log(DEBUG, "(padded) size of hunk %s:%s = %d", htype, hname, hsize)
+                    self._write_word(int(hsize / 4))            # size of hunk in words
+                    self._fobj.write(content)                   # content
+                    # Both the AmigaDOS manual and the Amiga Guru book state that after the length word only the data
+                    # itself and nothing else follows, but it seems in executables the data is always followed by a null word...
+                    if htype == 'data':
+                        self._write_word(0)
                     
-                if hsize % 4 > 0:
-                    hsize += 4 - hsize % 4
-                log(DEBUG, "(padded) size of code hunk %s = %d", hname, hsize)
-                self._write_word(int(hsize / 4))        # size of hunk in words
-                self._fobj.write(code)                  # code
-                
-                self._write_word(BlockType.HUNK_RELOC32)    # block type
-                for htype in ('code', 'bss', 'data'):
-                    hnames = set([reloc.hname for reloc in all_relocs if reloc.htype == htype])
-                    for hname in sorted(hnames):
-                        relocs = [reloc for reloc in all_relocs if reloc.htype == htype and reloc.hname == hname]
-                        log(DEBUG, "%d relocations referencing hunk %s:%s", len(relocs), htype, hname)
-                        self._write_word(len(relocs))       # number of offsets
-                        # We assume here that all hunks with the same type and name have the same hunk number
-                        # (only the displacements differ).
-                        hnum, disp = db.map[relocs[0].uname + ':' + htype + ':' + hname].split(':')
-                        self._write_word(int(hnum))         # number of referenced hunk
-                        for reloc in relocs:
-                            self._write_word(reloc.offset)
-                self._write_word(0)                         # end of list
-                self._write_word(BlockType.HUNK_END)        # end of hunk
+                    self._write_word(BlockType.HUNK_RELOC32)    # block type
+                    for htype in ('code', 'bss', 'data'):
+                        hnames = set([reloc.hname for reloc in all_relocs if reloc.htype == htype])
+                        for hname in sorted(hnames):
+                            relocs = [reloc for reloc in all_relocs if reloc.htype == htype and reloc.hname == hname]
+                            log(DEBUG, "%d relocations referencing hunk %s:%s", len(relocs), htype, hname)
+                            self._write_word(len(relocs))       # number of offsets
+                            # We assume here that all hunks with the same type and name have the same hunk number
+                            # (only the displacements differ).
+                            hnum, disp = db.map[relocs[0].uname + ':' + htype + ':' + hname].split(':')
+                            self._write_word(int(hnum))         # number of referenced hunk
+                            for reloc in relocs:
+                                self._write_word(reloc.offset)
+                    self._write_word(0)                         # end of list
+                    self._write_word(BlockType.HUNK_END)        # end of hunk
                     
 
     def _write_word(self, word):
@@ -352,19 +357,20 @@ for fname in args.files:
 
 # resolve references to relocations
 log(INFO, "resolving references...")
-for hname in db.hunks['code']:
-    for hunk in db.hunks['code'][hname]:
-        log(DEBUG, "processing hunk %s in unit %s...", hname, hunk.uname)
-        for ref in hunk.refs:
-            if ref.sname in db.symbols:
-                sym   = db.symbols[ref.sname]
-                reloc = Reloc(sym.uname, sym.htype, sym.hname, -1, ref.offset)
-                log(DEBUG, "adding relocation %s for referenced symbol %s", reloc, ref.sname)
-                hunk.relocs.append(reloc)
-                log(DEBUG, "writing symbol offset 0x%08x at offset 0x%08x", sym.offset, ref.offset)
-                hunk.content[ref.offset:ref.offset + 4] = pack('>L', sym.offset)
-            else:
-                log(ERROR, "undefined symbol %s", ref.sname)
+for htype in ('code', 'data'):
+    for hname in db.hunks[htype]:
+        for hunk in db.hunks[htype][hname]:
+            log(DEBUG, "processing hunk %s:%s in unit %s...", htype, hname, hunk.uname)
+            for ref in hunk.refs:
+                if ref.sname in db.symbols:
+                    sym   = db.symbols[ref.sname]
+                    reloc = Reloc(sym.uname, sym.htype, sym.hname, -1, ref.offset)
+                    log(DEBUG, "adding relocation %s for referenced symbol %s", reloc, ref.sname)
+                    hunk.relocs.append(reloc)
+                    log(DEBUG, "writing symbol offset 0x%08x at offset 0x%08x", sym.offset, ref.offset)
+                    hunk.content[ref.offset:ref.offset + 4] = pack('>L', sym.offset)
+                else:
+                    log(ERROR, "undefined symbol %s", ref.sname)
 
 
 # build map of executable => mapping of unit name + hunk type + hunk name to hunk number + displacement
