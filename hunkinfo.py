@@ -160,9 +160,8 @@ class HunkReader(object):
         log(INFO, "reading HUNK_DATA block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
-        # Both the AmigaDOS manual and the Amiga Guru book say that after the length word only the data
-        # itself and nothing else follows, but it seems in executables there always comes a zero word
-        # after the data...
+        # Both the AmigaDOS manual and the Amiga Guru book state that after the length word only the data
+        # itself and nothing else follows, but it seems in executables the data is always followed by a null word...
         # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
         if self.ftype == HunkReader.FILE_EXE:
             log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read((nwords  + 1) * 4)))
