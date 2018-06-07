@@ -126,7 +126,6 @@ class HunkReader(object):
     
     def _read_header_block(self):
         log(INFO, "reading HUNK_HEADER block... file is a AmigaDOS executable")
-        self.ftype = HunkReader.FILE_EXE
         log(DEBUG, "long words reserved for resident libraries: %d", self._read_word())
         log(DEBUG, "number of hunks: %d", self._read_word())
         fhunk = self._read_word()
@@ -139,7 +138,6 @@ class HunkReader(object):
     
     def _read_unit_block(self):
         log(INFO, "reading HUNK_UNIT block... file is a AmigaDOS object file")
-        self.ftype = HunkReader.FILE_OBJ
         log(INFO, "unit name: %s", self._read_string(self._read_word() * 4))
         
         
@@ -160,13 +158,8 @@ class HunkReader(object):
         log(INFO, "reading HUNK_DATA block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
-        # Both the AmigaDOS manual and the Amiga Guru book state that after the length word only the data
-        # itself and nothing else follows, but it seems in executables the data is always followed by a null word...
         # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
-        if self.ftype == HunkReader.FILE_EXE:
-            log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read((nwords  + 1) * 4)))
-        else:
-            log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read(nwords * 4)))
+        log(DEBUG, "hex dump of data block:\n" + hexdump(self._fobj.read(nwords * 4)))
         
         
     def _read_bss_block(self):
@@ -219,7 +212,7 @@ class HunkReader(object):
             refhnum = self._read_word()
             log(DEBUG, "relocations referencing hunk #%d:", refhnum)
             for i in range(0, noffsets):
-                log(DEBUG, "offset = 0x%08x", self._read_word())
+                log(DEBUG, "position = 0x%08x", self._read_word())
             
         
     _read_funcs = dict()

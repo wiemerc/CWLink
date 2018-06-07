@@ -308,11 +308,6 @@ class HunkWriter(object):
                     if htype != 'bss':
                         self._fobj.write(content)               # content
                         
-                    # Both the AmigaDOS manual and the Amiga Guru book state that after the length word only the data
-                    # itself and nothing else follows, but it seems in executables the data is always followed by a null word...
-                    if htype == 'data':
-                        self._write_word(0)
-                    
                     # It doesn't hurt to have empty HUNK_RELOC32 blocks but we avoid them anyway.
                     if all_relocs:
                         self._write_word(BlockType.HUNK_RELOC32)    # block type
