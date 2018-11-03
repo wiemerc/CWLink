@@ -84,8 +84,9 @@ class HunkReader(object):
     EXT_DEXT16 = 134
     EXT_DEXT8  = 135
         
-    # stab names taken from binutils-gdb/include/aout/stab.def
-    N_EXT = 0x01
+    # stab types / names taken from binutils-gdb/include/aout/stab.def
+    N_UNDF = 0x00
+    N_EXT  = 0x01
     _stab_type_to_name = {
         0x00: 'N_UNDF',
         0x01: 'N_EXT',
@@ -233,7 +234,7 @@ class HunkReader(object):
         while idx < len(buffer) and buffer[idx] != 0:
             idx += 1
         if idx < len(buffer):
-            return buffer[0:idx].decode()
+            return buffer[0:idx].decode('ascii')
         else:
             raise ValueError("no terminating NULL byte found in buffer")
 
@@ -362,26 +363,24 @@ class HunkReader(object):
                 log(DEBUG, "line #%d at address 0x%08x", line, addr)
                 nwords -= 2
         else:
-            log(DEBUG, "format is assumed to be STABS (GCC) - outputting stab table:")
-            # With GCC, the stab table seems to start after 36 bytes in the HUNK_DEBUG hunk.
-            # The first stab is N_SO (0x64), the offset seems to be the number of stabs that follow.
-            offset += 36                                             # discard first 36 bytes
-            stab    = Stab.from_buffer_copy(data[offset:])
-            nstabs  = stab.st_offset                                 # offset of N_SO stab == number of stabs
-            offset += sizeof(Stab)
-            stabtab = data[offset:]                                  # stab table without first stab
-            strtab  = data[offset + sizeof(Stab) * (nstabs - 1):]    # string table
-            log(DEBUG, "stab: type = %s, string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
-                HunkReader._stab_type_to_name[stab.st_type],
-                HunkReader._get_string_from_buffer(strtab[stab.st_offset:]),
-                stab.st_offset,
-                stab.st_other,
-                stab.st_desc,
-                stab.st_value
-            )
+            log(DEBUG, "format is assumed to be STABS (GCC) - outputting stabs table:")
+            # With GCC, the stab table starts with a stab of type N_UNDF. The description field
+            # of this stab contains the size of the stabs table in bytes for this compilation unit
+            # (including this first stab), the value field is the size of the string table.
+            # This format is somewhat described in the file binutils-gdb/bfd/stabs.c of the
+            # GNU Binutils and GDB sources.
+            stab = Stab.from_buffer_copy(data[offset:])
+            if stab.st_type == HunkReader.N_UNDF:
+                nstabs  = int(stab.st_desc / sizeof(Stab))
+                offset += sizeof(Stab)
+                stabtab = data[offset:]                                 # stab table without first stab
+                strtab  = data[offset + sizeof(Stab) * nstabs:]         # string table
+                log(DEBUG, "stab table contains %d entries", nstabs)
+            else:
+                raise ValueError("stabs table does not start with stab N_UNDF")
 
             offset  = 0
-            for i in range(1, nstabs):
+            for i in range(0, nstabs - 1):
                 stab = Stab.from_buffer_copy(stabtab[offset:])
                 offset += sizeof(stab)
                 if stab.st_type in HunkReader._stab_type_to_name:
