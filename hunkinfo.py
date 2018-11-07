@@ -9,6 +9,191 @@ from struct import pack, unpack
 from ctypes import BigEndianStructure, c_ubyte, c_ushort, c_uint, addressof, sizeof, memmove
 
 
+# file types
+FILE_EXE = 1
+FILE_OBJ = 2
+
+# block types from from dos/doshunks.h
+HUNK_UNIT	  = 999
+HUNK_NAME	  = 1000
+HUNK_CODE	  = 1001
+HUNK_DATA	  = 1002
+HUNK_BSS	  = 1003
+HUNK_RELOC32  = 1004
+HUNK_RELOC16  = 1005
+HUNK_RELOC8	  = 1006
+HUNK_EXT	  = 1007
+HUNK_SYMBOL	  = 1008
+HUNK_DEBUG	  = 1009
+HUNK_END	  = 1010
+HUNK_HEADER	  = 1011
+HUNK_OVERLAY  = 1013
+HUNK_BREAK	  = 1014
+HUNK_DREL32	  = 1015
+HUNK_DREL16	  = 1016
+HUNK_DREL8	  = 1017
+HUNK_LIB	  = 1018
+HUNK_INDEX	  = 1019
+
+# symbol types from from dos/doshunks.h
+EXT_SYMB   = 0
+EXT_DEF	   = 1
+EXT_ABS	   = 2
+EXT_RES	   = 3
+EXT_REF32  = 129
+EXT_COMMON = 130
+EXT_REF16  = 131
+EXT_REF8   = 132
+EXT_DEXT32 = 133
+EXT_DEXT16 = 134
+EXT_DEXT8  = 135
+    
+# stab types / names from binutils-gdb/include/aout/stab.def
+N_UNDF    = 0x00
+N_EXT     = 0x01
+N_ABS     = 0x02
+N_TEXT    = 0x04
+N_DATA    = 0x06
+N_BSS     = 0x08
+N_INDR    = 0x0a
+N_FN_SEQ  = 0x0c
+N_WEAKU   = 0x0d
+N_WEAKA   = 0x0e
+N_WEAKT   = 0x0f
+N_WEAKD   = 0x10
+N_WEAKB   = 0x11
+N_COMM    = 0x12
+N_SETA    = 0x14
+N_SETT    = 0x16
+N_SETD    = 0x18
+N_SETB    = 0x1a
+N_SETV    = 0x1c
+N_WARNING = 0x1e
+N_FN      = 0x1f
+N_GSYM    = 0x20
+N_FNAME   = 0x22
+N_FUN     = 0x24
+N_STSYM   = 0x26
+N_LCSYM   = 0x28
+N_MAIN    = 0x2a
+N_ROSYM   = 0x2c
+N_BNSYM   = 0x2e
+N_PC      = 0x30
+N_NSYMS   = 0x32
+N_NOMAP   = 0x34
+N_OBJ     = 0x38
+N_OPT     = 0x3c
+N_RSYM    = 0x40
+N_M2C     = 0x42
+N_SLINE   = 0x44
+N_DSLINE  = 0x46
+N_BSLINE  = 0x48
+N_DEFD    = 0x4a
+N_FLINE   = 0x4C
+N_ENSYM   = 0x4E
+N_EHDECL  = 0x50
+N_CATCH   = 0x54
+N_SSYM    = 0x60
+N_ENDM    = 0x62
+N_SO      = 0x64
+N_OSO     = 0x66
+N_ALIAS   = 0x6c
+N_LSYM    = 0x80
+N_BINCL   = 0x82
+N_SOL     = 0x84
+N_PSYM    = 0xa0
+N_EINCL   = 0xa2
+N_ENTRY   = 0xa4
+N_LBRAC   = 0xc0
+N_EXCL    = 0xc2
+N_SCOPE   = 0xc4
+N_PATCH   = 0xd0
+N_RBRAC   = 0xe0
+N_BCOMM   = 0xe2
+N_ECOMM   = 0xe4
+N_ECOML   = 0xe8
+N_WITH    = 0xea
+N_NBTEXT  = 0xF0
+N_NBDATA  = 0xF2
+N_NBBSS   = 0xF4
+N_NBSTS   = 0xF6
+N_NBLCS   = 0xF8
+N_LENG    = 0xfe
+
+stab_type_to_name = {
+    0x00: 'N_UNDF',
+    0x01: 'N_EXT',
+    0x02: 'N_ABS',
+    0x04: 'N_TEXT',
+    0x06: 'N_DATA',
+    0x08: 'N_BSS',
+    0x0a: 'N_INDR',
+    0x0c: 'N_FN_SEQ',
+    0x0d: 'N_WEAKU',
+    0x0e: 'N_WEAKA',
+    0x0f: 'N_WEAKT',
+    0x10: 'N_WEAKD',
+    0x11: 'N_WEAKB',
+    0x12: 'N_COMM',
+    0x14: 'N_SETA',
+    0x16: 'N_SETT',
+    0x18: 'N_SETD',
+    0x1a: 'N_SETB',
+    0x1c: 'N_SETV',
+    0x1e: 'N_WARNING',
+    0x1f: 'N_FN',
+    0x20: 'N_GSYM',
+    0x22: 'N_FNAME',
+    0x24: 'N_FUN',
+    0x26: 'N_STSYM',
+    0x28: 'N_LCSYM',
+    0x2a: 'N_MAIN',
+    0x2c: 'N_ROSYM',
+    0x2e: 'N_BNSYM',
+    0x30: 'N_PC',
+    0x32: 'N_NSYMS',
+    0x34: 'N_NOMAP',
+    0x38: 'N_OBJ',
+    0x3c: 'N_OPT',
+    0x40: 'N_RSYM',
+    0x42: 'N_M2C',
+    0x44: 'N_SLINE',
+    0x46: 'N_DSLINE',
+    0x48: 'N_BSLINE',
+    0x4a: 'N_DEFD',
+    0x4C: 'N_FLINE',
+    0x4E: 'N_ENSYM',
+    0x50: 'N_EHDECL',
+    0x54: 'N_CATCH',
+    0x60: 'N_SSYM',
+    0x62: 'N_ENDM',
+    0x64: 'N_SO',
+    0x66: 'N_OSO',
+    0x6c: 'N_ALIAS',
+    0x80: 'N_LSYM',
+    0x82: 'N_BINCL',
+    0x84: 'N_SOL',
+    0xa0: 'N_PSYM',
+    0xa2: 'N_EINCL',
+    0xa4: 'N_ENTRY',
+    0xc0: 'N_LBRAC',
+    0xc2: 'N_EXCL',
+    0xc4: 'N_SCOPE',
+    0xd0: 'N_PATCH',
+    0xe0: 'N_RBRAC',
+    0xe2: 'N_BCOMM',
+    0xe4: 'N_ECOMM',
+    0xe8: 'N_ECOML',
+    0xea: 'N_WITH',
+    0xF0: 'N_NBTEXT',
+    0xF2: 'N_NBDATA',
+    0xF4: 'N_NBBSS',
+    0xF6: 'N_NBSTS',
+    0xF8: 'N_NBLCS',
+    0xfe: 'N_LENG',
+}
+
+
 def hexdump(buffer):
     dump = ''
     pos  = 0
@@ -34,6 +219,109 @@ def hexdump(buffer):
     return dump
         
         
+def get_string_from_buffer(buffer):
+    idx = 0
+    while idx < len(buffer) and buffer[idx] != 0:
+        idx += 1
+    if idx < len(buffer):
+        return buffer[0:idx].decode('ascii')
+    else:
+        raise ValueError("no terminating NULL byte found in buffer")
+
+
+def build_program_tree(stabs, nodes=[]):
+    # The stabs are emitted by the compiler (at least by GCC) in two different orders.
+    # Local variables (and nested functions) appear *before* the enclosing scope.
+    # Therefore we push their nodes onto a stack when we see them and pop them again
+    # when we see the beginning of the enclosing scope.
+    # Nested scopes on the other hand appear in the correct order, that is from outer to
+    # inner. We handle them by recursively calling ourselves for each range of stabs
+    # between N_LBRAC and N_RBRAC. Tricky stuff...
+    name = ''
+    node = None
+    while stabs:
+        stab, string = stabs.pop()
+        if stab.st_type == N_SO:
+            # compilation unit => create new node 
+            # TODO: handle multiple compilation units
+            name = string
+            node = ProgramNode(N_SO)
+
+        elif stab.st_type in (N_GSYM, N_STSYM):
+            # global or file-scoped variable => store it in current node (compilation unit)
+            symbol, typeid = string.split(':')
+            if node is None:
+                raise AssertionError("stab for global or file-scoped variable but no current node")
+            if symbol not in node.pn_children:
+                node.pn_children[symbol] = ProgramNode(stab.st_type, typeid=typeid, start_addr=stab.st_value)
+            else:
+                raise AssertionError(f"stab for symbol {symbol}, but symbol already exists in current scope")
+
+        elif stab.st_type in (N_LSYM, N_PSYM):
+            # local variable or function parameter => put it on the stack, the stab for the scope (N_LBRAC) comes later
+            symbol, typeid = string.split(':')
+            nodes.append((symbol, ProgramNode(stab.st_type, typeid=typeid, start_addr=stab.st_value)))
+
+        elif stab.st_type  == N_FUN:
+            # function => put it on the stack, the stab for the scope (N_LBRAC) comes later
+            # We change the type to N_FNAME so that we can differentiate between a node with
+            # the scope of the function (N_FUN) and a node with just its name and start address (N_FNAME).
+            # TODO: Maybe it would be better to use our own types for the program nodes (PN_XXX).
+            symbol, typeid = string.split(':')
+            nodes.append((symbol, ProgramNode(N_FNAME, typeid=typeid, start_addr=stab.st_value)))
+
+        elif stab.st_type == N_LBRAC:
+            # beginning of scope
+            if node is not None:
+                # current scope exists => we call ourselves to create new scope
+                stabs.append((stab, string))                        # push current stab onto stack again
+                cname, child = build_program_tree(stabs, nodes)
+                if child.pn_type == N_FUN:
+                    # child is function => push it onto stack because nested functions appear
+                    # *before* the enclosing scope
+                    nodes.append((cname, child))
+                elif child.pn_type == N_LBRAC:
+                    # child is scope => add it to current scope because nested functions appear
+                    # *after* the enclosing scope
+                    node.pn_children[cname] = child
+                else:
+                    raise AssertionError(f"child is neither function nor scope, type = {stab_type_to_name[child.pn_type]}")
+            else:
+                # current scope does not exist => we've just been called to create new scope
+                name = f'SCOPE@0x{stab.st_value:08x}'
+                node = ProgramNode(N_LBRAC, start_addr=stab.st_value)
+                # add all nodes on the stack as children
+                while nodes:
+                    cname, child = nodes.pop()
+                    node.pn_children[cname] = child
+                    if child.pn_type == N_FNAME:
+                        # change type to N_FUN so that our caller will put this scope onto the stack
+                        # and change name to the function's name
+                        node.pn_type = N_FUN
+                        name = cname
+
+        elif stab.st_type == N_RBRAC:
+            # end of scope => add end address and return created scope
+            node.pn_end_addr = stab.st_value
+            return name, node
+
+    # add any functions on the stack to current scope
+    while nodes:
+        cname, child = nodes.pop()
+        node.pn_children[cname] = child
+
+    # return name and node for compilation unit
+    return name, node
+
+
+def print_program_node(node, indent=0):
+    print(str(node))
+    indent += 4
+    for name, node in node.pn_children.items():
+        print(' ' * indent + f'{name:<20}: ', end='')
+        print_program_node(node, indent)
+
+
 class Stab(BigEndianStructure):
     _fields_ = [
         ('st_offset', c_uint),
@@ -44,123 +332,20 @@ class Stab(BigEndianStructure):
     ]
 
 
+class ProgramNode(object):
+    def __init__(self, type, typeid='', start_addr=0, end_addr=0):
+        self.pn_type       = type
+        self.pn_typeid     = typeid
+        self.pn_start_addr = start_addr
+        self.pn_end_addr   = end_addr
+        self.pn_children   = {}
+
+    def __str__(self):
+        # TODO: look up type id in data dictionary => typeid_to_type()
+        return f"ProgramNode(pn_type={stab_type_to_name[self.pn_type]}, pn_typeid='{self.pn_typeid}', pn_start_addr=0x{self.pn_start_addr:08x}, pn_end_addr=0x{self.pn_end_addr:08x})"
+
+
 class HunkReader(object):
-    # file types
-    FILE_EXE = 1
-    FILE_OBJ = 2
-    
-    # block types from from dos/doshunks.h
-    HUNK_UNIT	  = 999
-    HUNK_NAME	  = 1000
-    HUNK_CODE	  = 1001
-    HUNK_DATA	  = 1002
-    HUNK_BSS	  = 1003
-    HUNK_RELOC32  = 1004
-    HUNK_RELOC16  = 1005
-    HUNK_RELOC8	  = 1006
-    HUNK_EXT	  = 1007
-    HUNK_SYMBOL	  = 1008
-    HUNK_DEBUG	  = 1009
-    HUNK_END	  = 1010
-    HUNK_HEADER	  = 1011
-    HUNK_OVERLAY  = 1013
-    HUNK_BREAK	  = 1014
-    HUNK_DREL32	  = 1015
-    HUNK_DREL16	  = 1016
-    HUNK_DREL8	  = 1017
-    HUNK_LIB	  = 1018
-    HUNK_INDEX	  = 1019
-    
-    # symbol types from from dos/doshunks.h
-    EXT_SYMB   = 0
-    EXT_DEF	   = 1
-    EXT_ABS	   = 2
-    EXT_RES	   = 3
-    EXT_REF32  = 129
-    EXT_COMMON = 130
-    EXT_REF16  = 131
-    EXT_REF8   = 132
-    EXT_DEXT32 = 133
-    EXT_DEXT16 = 134
-    EXT_DEXT8  = 135
-        
-    # stab types / names taken from binutils-gdb/include/aout/stab.def
-    N_UNDF = 0x00
-    N_EXT  = 0x01
-    _stab_type_to_name = {
-        0x00: 'N_UNDF',
-        0x01: 'N_EXT',
-        0x02: 'N_ABS',
-        0x04: 'N_TEXT',
-        0x06: 'N_DATA',
-        0x08: 'N_BSS',
-        0x0a: 'N_INDR',
-        0x0c: 'N_FN_SEQ',
-        0x0d: 'N_WEAKU',
-        0x0e: 'N_WEAKA',
-        0x0f: 'N_WEAKT',
-        0x10: 'N_WEAKD',
-        0x11: 'N_WEAKB',
-        0x12: 'N_COMM',
-        0x14: 'N_SETA',
-        0x16: 'N_SETT',
-        0x18: 'N_SETD',
-        0x1a: 'N_SETB',
-        0x1c: 'N_SETV',
-        0x1e: 'N_WARNING',
-        0x1f: 'N_FN',
-        0x20: 'N_GSYM',
-        0x22: 'N_FNAME',
-        0x24: 'N_FUN',
-        0x26: 'N_STSYM',
-        0x28: 'N_LCSYM',
-        0x2a: 'N_MAIN',
-        0x2c: 'N_ROSYM',
-        0x2e: 'N_BNSYM',
-        0x30: 'N_PC',
-        0x32: 'N_NSYMS',
-        0x34: 'N_NOMAP',
-        0x38: 'N_OBJ',
-        0x3c: 'N_OPT',
-        0x40: 'N_RSYM',
-        0x42: 'N_M2C',
-        0x44: 'N_SLINE',
-        0x46: 'N_DSLINE',
-        0x48: 'N_BSLINE',
-        0x4a: 'N_DEFD',
-        0x4C: 'N_FLINE',
-        0x4E: 'N_ENSYM',
-        0x50: 'N_EHDECL',
-        0x54: 'N_CATCH',
-        0x60: 'N_SSYM',
-        0x62: 'N_ENDM',
-        0x64: 'N_SO',
-        0x66: 'N_OSO',
-        0x6c: 'N_ALIAS',
-        0x80: 'N_LSYM',
-        0x82: 'N_BINCL',
-        0x84: 'N_SOL',
-        0xa0: 'N_PSYM',
-        0xa2: 'N_EINCL',
-        0xa4: 'N_ENTRY',
-        0xc0: 'N_LBRAC',
-        0xc2: 'N_EXCL',
-        0xc4: 'N_SCOPE',
-        0xd0: 'N_PATCH',
-        0xe0: 'N_RBRAC',
-        0xe2: 'N_BCOMM',
-        0xe4: 'N_ECOMM',
-        0xe8: 'N_ECOML',
-        0xea: 'N_WITH',
-        0xF0: 'N_NBTEXT',
-        0xF2: 'N_NBDATA',
-        0xF4: 'N_NBBSS',
-        0xF6: 'N_NBSTS',
-        0xF8: 'N_NBLCS',
-        0xfe: 'N_LENG',
-    }
-
-
     def __init__(self, fname):
         self.fname = fname
 
@@ -172,7 +357,7 @@ class HunkReader(object):
                 try:
                     btype = self._read_word()
                     log(INFO, "hunk #%d, block type = 0x%04x (%d)", hnum, btype, btype)
-                    if btype == HunkReader.HUNK_END:
+                    if btype == HUNK_END:
                         # possibly another hunk follows, nothing else to do
                         log(INFO, "hunk #%d finished", hnum)
                         hnum += 1
@@ -181,7 +366,7 @@ class HunkReader(object):
                         HunkReader._read_funcs[btype](self)
                         
                 except EOFError:
-                    if btype == HunkReader.HUNK_END:
+                    if btype == HUNK_END:
                         break
                     else:
                         log(ERROR, "encountered EOF while reading file '%s'", self.fname)
@@ -193,6 +378,7 @@ class HunkReader(object):
 
                 except Exception as ex:
                     log(ERROR, "error occured while reading file: %s", ex)
+                    raise
                     break
 
 
@@ -228,17 +414,6 @@ class HunkReader(object):
             return EOFError
 
     
-    @staticmethod
-    def _get_string_from_buffer(buffer):
-        idx = 0
-        while idx < len(buffer) and buffer[idx] != 0:
-            idx += 1
-        if idx < len(buffer):
-            return buffer[0:idx].decode('ascii')
-        else:
-            raise ValueError("no terminating NULL byte found in buffer")
-
-
     def _read_header_block(self):
         log(INFO, "reading HUNK_HEADER block... file is a AmigaDOS executable")
         log(DEBUG, "long words reserved for resident libraries: %d", self._read_word())
@@ -293,10 +468,10 @@ class HunkReader(object):
             stype = (type_len & 0xff000000) >> 24
             sname = self._read_string((type_len & 0x00ffffff) * 4)
             
-            if stype in (HunkReader.EXT_DEF, HunkReader.EXT_ABS, HunkReader.EXT_RES):
+            if stype in (EXT_DEF, EXT_ABS, EXT_RES):
                 # definition
                 log(DEBUG, "definition of symbol (type = %d): %s = 0x%08x", stype, sname, self._read_word())
-            elif stype in (HunkReader.EXT_REF8, HunkReader.EXT_REF16, HunkReader.EXT_REF32):
+            elif stype in (EXT_REF8, EXT_REF16, EXT_REF32):
                 # reference(s)
                 nrefs = self._read_word()
                 for i in range(0, nrefs):
@@ -370,33 +545,35 @@ class HunkReader(object):
             # This format is somewhat described in the file binutils-gdb/bfd/stabs.c of the
             # GNU Binutils and GDB sources.
             stab = Stab.from_buffer_copy(data[offset:])
-            if stab.st_type == HunkReader.N_UNDF:
+            if stab.st_type == N_UNDF:
                 nstabs  = int(stab.st_desc / sizeof(Stab))
                 offset += sizeof(Stab)
-                stabtab = data[offset:]                                 # stab table without first stab
-                strtab  = data[offset + sizeof(Stab) * nstabs:]         # string table
+                stabtab = data[offset:]                             # stab table without first stab
+                strtab  = data[offset + sizeof(Stab) * nstabs:]     # string table
                 log(DEBUG, "stab table contains %d entries", nstabs)
             else:
                 raise ValueError("stabs table does not start with stab N_UNDF")
 
             offset  = 0
+            stabs   = []
             for i in range(0, nstabs - 1):
                 stab = Stab.from_buffer_copy(stabtab[offset:])
+                string = get_string_from_buffer(strtab[stab.st_offset:])
                 offset += sizeof(stab)
-                if stab.st_type in HunkReader._stab_type_to_name:
+                if stab.st_type in stab_type_to_name:
                     log(DEBUG, "stab: type = %s, string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
-                        HunkReader._stab_type_to_name[stab.st_type],
-                        HunkReader._get_string_from_buffer(strtab[stab.st_offset:]),
+                        stab_type_to_name[stab.st_type],
+                        string,
                         stab.st_offset,
                         stab.st_other,
                         stab.st_desc,
                         stab.st_value
                     )
-                elif stab.st_type & ~HunkReader.N_EXT in HunkReader._stab_type_to_name:
+                elif stab.st_type & ~N_EXT in stab_type_to_name:
                     # stab contains external symbol => clear N_EXT bit to look up name
                     log(DEBUG, "stab: type = %s (external), string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
-                        HunkReader._stab_type_to_name[stab.st_type & ~HunkReader.N_EXT],
-                        HunkReader._get_string_from_buffer(strtab[stab.st_offset:]),
+                        stab_type_to_name[stab.st_type & ~N_EXT],
+                        string,
                         stab.st_offset,
                         stab.st_other,
                         stab.st_desc,
@@ -404,6 +581,28 @@ class HunkReader(object):
                     )
                 else:
                     log(ERROR, "stab with unknown type 0x%d found", stab.st_type)
+                    continue
+                
+                # process stab
+                if stab.st_type == N_LSYM and stab.st_value == 0:
+                    # TODO: type definition => add it to data dictionary
+                    pass
+                elif stab.st_type == N_SLINE:
+                    # TODO: line / address stab => add it to line number table
+                    pass
+                elif stab.st_type in (N_SO, N_GSYM, N_STSYM, N_LSYM, N_PSYM, N_FUN, N_LBRAC, N_RBRAC):
+                    # add stab to list for building tree structure
+                    stabs.append((stab, string))
+
+            # build tree structure from the stabs describing the program (sort of a simplified AST)
+            stabs.reverse()                                         # so that build_program_tree() can use pop()
+            name, node = build_program_tree(stabs)
+            program = ProgramNode(N_UNDF)                           # root node
+            program.pn_children[name] = node
+            log(DEBUG, "program tree:")
+            for unit in program.pn_children:
+                print(f'{unit:<20}: ', end='')
+                print_program_node(program.pn_children[unit])
 
 
     _read_funcs = dict()
