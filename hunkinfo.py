@@ -47,7 +47,7 @@ EXT_REF8   = 132
 EXT_DEXT32 = 133
 EXT_DEXT16 = 134
 EXT_DEXT8  = 135
-    
+
 # stab types / names from binutils-gdb/include/aout/stab.def
 N_UNDF    = 0x00
 N_EXT     = 0x01
@@ -194,7 +194,7 @@ stab_type_to_name = {
 }
 
 
-def hexdump(buffer):
+def create_hexdump(buffer):
     dump = ''
     pos  = 0
     while (pos < len(buffer)):
@@ -229,6 +229,74 @@ def get_string_from_buffer(buffer):
         raise ValueError("no terminating NULL byte found in buffer")
 
 
+def read_stabs_info(data):
+    # With GCC, the stab table starts with a stab of type N_UNDF. The description field
+    # of this stab contains the size of the stabs table in bytes for this compilation unit
+    # (including this first stab), the value field is the size of the string table.
+    # This format is somewhat described in the file binutils-gdb/bfd/stabs.c of the
+    # GNU Binutils and GDB sources.
+    offset = 0
+    stab = Stab.from_buffer_copy(data[offset:])
+    if stab.st_type == N_UNDF:
+        nstabs  = int(stab.st_desc / sizeof(Stab))
+        offset += sizeof(Stab)
+        stabtab = data[offset:]                             # stab table without first stab
+        strtab  = data[offset + sizeof(Stab) * nstabs:]     # string table
+        log(DEBUG, "stab table contains %d entries", nstabs)
+    else:
+        raise ValueError("stabs table does not start with stab N_UNDF")
+
+    offset  = 0
+    stabs   = []
+    for i in range(0, nstabs - 1):
+        stab = Stab.from_buffer_copy(stabtab[offset:])
+        string = get_string_from_buffer(strtab[stab.st_offset:])
+        offset += sizeof(stab)
+        if stab.st_type in stab_type_to_name:
+            log(DEBUG, "stab: type = %s, string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
+                stab_type_to_name[stab.st_type],
+                string,
+                stab.st_offset,
+                stab.st_other,
+                stab.st_desc,
+                stab.st_value
+            )
+        elif stab.st_type & ~N_EXT in stab_type_to_name:
+            # stab contains external symbol => clear N_EXT bit to look up name
+            log(DEBUG, "stab: type = %s (external), string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
+                stab_type_to_name[stab.st_type & ~N_EXT],
+                string,
+                stab.st_offset,
+                stab.st_other,
+                stab.st_desc,
+                stab.st_value
+            )
+        else:
+            log(ERROR, "stab with unknown type 0x%d found", stab.st_type)
+            continue
+
+        # process stab
+        if stab.st_type == N_LSYM and stab.st_value == 0:
+            # TODO: type definition => add it to data dictionary
+            pass
+        elif stab.st_type == N_SLINE:
+            # TODO: line / address stab => add it to line number table
+            pass
+        elif stab.st_type in (N_SO, N_GSYM, N_STSYM, N_LSYM, N_PSYM, N_FUN, N_LBRAC, N_RBRAC):
+            # add stab to list for building tree structure
+            stabs.append((stab, string))
+
+    # build tree structure from the stabs describing the program (sort of a simplified AST)
+    stabs.reverse()                                         # so that build_program_tree() can use pop()
+    name, node = build_program_tree(stabs)
+    program = ProgramNode(N_UNDF)                           # root node
+    program.pn_children[name] = node
+    log(DEBUG, "outputting program tree:")
+    for unit in program.pn_children:
+        print(f'{unit:<20}: ', end='')
+        print_program_node(program.pn_children[unit])
+
+
 def build_program_tree(stabs, nodes=[]):
     # The stabs are emitted by the compiler (at least by GCC) in two different orders.
     # Local variables (and nested functions) appear *before* the enclosing scope.
@@ -242,7 +310,7 @@ def build_program_tree(stabs, nodes=[]):
     while stabs:
         stab, string = stabs.pop()
         if stab.st_type == N_SO:
-            # compilation unit => create new node 
+            # compilation unit => create new node
             # TODO: handle multiple compilation units
             name = string
             node = ProgramNode(N_SO)
@@ -378,7 +446,6 @@ class HunkReader(object):
 
                 except Exception as ex:
                     log(ERROR, "error occured while reading file: %s", ex)
-                    raise
                     break
 
 
@@ -440,16 +507,14 @@ class HunkReader(object):
         log(INFO, "reading HUNK_CODE block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of code block: %d", nwords * 4)
-        # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
-        log(DEBUG, "hex dump of code block:\n" + hexdump(self._fobj.read(nwords * 4)))
+        log(DEBUG, "hex dump of code block:\n" + create_hexdump(self._fobj.read(nwords * 4)))
         
         
     def _read_data_block(self):
         log(INFO, "reading HUNK_DATA block...")
         nwords = self._read_word()
         log(DEBUG, "size (in bytes) of data block: %d", nwords * 4)
-        # TODO: create hexdump with the symbols, references and addresses to be relocated highlighted
-        log(DEBUG, "hex dump of data block:\n" + hexdump(self._fobj.read(nwords * 4)))
+        log(DEBUG, "hex dump of data block:\n" + create_hexdump(self._fobj.read(nwords * 4)))
         
         
     def _read_bss_block(self):
@@ -518,7 +583,7 @@ class HunkReader(object):
         #   linedebug_hunks() in the file t_amigahunk.c from VLINK.
         # - the STABS format that was also popular on UNIX and was used by GCC that contains
         #   type definitions, a list of all functions and variables and a line / offset table
-        log(DEBUG, "hexdump of HUNK_DEBUG block:\n" + hexdump(data))
+        log(DEBUG, "hexdump of HUNK_DEBUG block:\n" + create_hexdump(data))
 
         if data[offset + 4:offset + 8] == b'LINE':
             log(DEBUG, "format is assumed to be LINE (SAS/C or VBCC)")
@@ -539,70 +604,7 @@ class HunkReader(object):
                 nwords -= 2
         else:
             log(DEBUG, "format is assumed to be STABS (GCC) - outputting stabs table:")
-            # With GCC, the stab table starts with a stab of type N_UNDF. The description field
-            # of this stab contains the size of the stabs table in bytes for this compilation unit
-            # (including this first stab), the value field is the size of the string table.
-            # This format is somewhat described in the file binutils-gdb/bfd/stabs.c of the
-            # GNU Binutils and GDB sources.
-            stab = Stab.from_buffer_copy(data[offset:])
-            if stab.st_type == N_UNDF:
-                nstabs  = int(stab.st_desc / sizeof(Stab))
-                offset += sizeof(Stab)
-                stabtab = data[offset:]                             # stab table without first stab
-                strtab  = data[offset + sizeof(Stab) * nstabs:]     # string table
-                log(DEBUG, "stab table contains %d entries", nstabs)
-            else:
-                raise ValueError("stabs table does not start with stab N_UNDF")
-
-            offset  = 0
-            stabs   = []
-            for i in range(0, nstabs - 1):
-                stab = Stab.from_buffer_copy(stabtab[offset:])
-                string = get_string_from_buffer(strtab[stab.st_offset:])
-                offset += sizeof(stab)
-                if stab.st_type in stab_type_to_name:
-                    log(DEBUG, "stab: type = %s, string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
-                        stab_type_to_name[stab.st_type],
-                        string,
-                        stab.st_offset,
-                        stab.st_other,
-                        stab.st_desc,
-                        stab.st_value
-                    )
-                elif stab.st_type & ~N_EXT in stab_type_to_name:
-                    # stab contains external symbol => clear N_EXT bit to look up name
-                    log(DEBUG, "stab: type = %s (external), string = '%s' (at 0x%x), other = 0x%x, desc = 0x%x, value = 0x%08x",
-                        stab_type_to_name[stab.st_type & ~N_EXT],
-                        string,
-                        stab.st_offset,
-                        stab.st_other,
-                        stab.st_desc,
-                        stab.st_value
-                    )
-                else:
-                    log(ERROR, "stab with unknown type 0x%d found", stab.st_type)
-                    continue
-                
-                # process stab
-                if stab.st_type == N_LSYM and stab.st_value == 0:
-                    # TODO: type definition => add it to data dictionary
-                    pass
-                elif stab.st_type == N_SLINE:
-                    # TODO: line / address stab => add it to line number table
-                    pass
-                elif stab.st_type in (N_SO, N_GSYM, N_STSYM, N_LSYM, N_PSYM, N_FUN, N_LBRAC, N_RBRAC):
-                    # add stab to list for building tree structure
-                    stabs.append((stab, string))
-
-            # build tree structure from the stabs describing the program (sort of a simplified AST)
-            stabs.reverse()                                         # so that build_program_tree() can use pop()
-            name, node = build_program_tree(stabs)
-            program = ProgramNode(N_UNDF)                           # root node
-            program.pn_children[name] = node
-            log(DEBUG, "program tree:")
-            for unit in program.pn_children:
-                print(f'{unit:<20}: ', end='')
-                print_program_node(program.pn_children[unit])
+            read_stabs_info(data)
 
 
     _read_funcs = dict()
