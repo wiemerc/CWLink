@@ -288,13 +288,11 @@ def read_stabs_info(data):
 
     # build tree structure from the stabs describing the program (sort of a simplified AST)
     stabs.reverse()                                         # so that build_program_tree() can use pop()
-    name, node = build_program_tree(stabs)
-    program = ProgramNode(N_UNDF)                           # root node
-    program.pn_children[name] = node
-    log(DEBUG, "outputting program tree:")
-    for unit in program.pn_children:
-        print(f'{unit:<20}: ', end='')
-        print_program_node(program.pn_children[unit])
+    node = build_program_tree(stabs)
+    program = ProgramNode(N_UNDF, '')                       # root node
+    program.pn_children.append(node)
+    log(DEBUG, "dumping program tree:")
+    print_program_node(program)
 
 
 def build_program_tree(stabs, nodes=[]):
@@ -305,30 +303,28 @@ def build_program_tree(stabs, nodes=[]):
     # Nested scopes on the other hand appear in the correct order, that is from outer to
     # inner. We handle them by recursively calling ourselves for each range of stabs
     # between N_LBRAC and N_RBRAC. Tricky stuff...
-    name = ''
     node = None
     while stabs:
         stab, string = stabs.pop()
         if stab.st_type == N_SO:
             # compilation unit => create new node
             # TODO: handle multiple compilation units
-            name = string
-            node = ProgramNode(N_SO)
+            # TODO: store also directory (first N_SO)
+            node = ProgramNode(N_SO, string)
 
-        elif stab.st_type in (N_GSYM, N_STSYM):
+        elif stab.st_type in (N_GSYM, N_STSYM, N_LCSYM):
             # global or file-scoped variable => store it in current node (compilation unit)
             symbol, typeid = string.split(':')
             if node is None:
                 raise AssertionError("stab for global or file-scoped variable but no current node")
-            if symbol not in node.pn_children:
-                node.pn_children[symbol] = ProgramNode(stab.st_type, typeid=typeid, start_addr=stab.st_value)
-            else:
-                raise AssertionError(f"stab for symbol {symbol}, but symbol already exists in current scope")
+            node.pn_children.append(ProgramNode(stab.st_type, symbol, typeid=typeid, start_addr=stab.st_value))
 
-        elif stab.st_type in (N_LSYM, N_PSYM):
-            # local variable or function parameter => put it on the stack, the stab for the scope (N_LBRAC) comes later
+        elif stab.st_type in (N_LSYM, N_PSYM, N_RSYM):
+            # local variable or function parameter => put it on the stack,the stab for the
+            # scope (N_LBRAC) comes later. In case of register variables (N_RSYM), the value
+            # is the register number with 0..7 = D0..D7 and 8..15 = A0..A7.
             symbol, typeid = string.split(':')
-            nodes.append((symbol, ProgramNode(stab.st_type, typeid=typeid, start_addr=stab.st_value)))
+            nodes.append(ProgramNode(stab.st_type, symbol, typeid=typeid, start_addr=stab.st_value))
 
         elif stab.st_type  == N_FUN:
             # function => put it on the stack, the stab for the scope (N_LBRAC) comes later
@@ -336,57 +332,55 @@ def build_program_tree(stabs, nodes=[]):
             # the scope of the function (N_FUN) and a node with just its name and start address (N_FNAME).
             # TODO: Maybe it would be better to use our own types for the program nodes (PN_XXX).
             symbol, typeid = string.split(':')
-            nodes.append((symbol, ProgramNode(N_FNAME, typeid=typeid, start_addr=stab.st_value)))
+            nodes.append(ProgramNode(N_FNAME, symbol, typeid=typeid, start_addr=stab.st_value))
 
         elif stab.st_type == N_LBRAC:
             # beginning of scope
             if node is not None:
                 # current scope exists => we call ourselves to create new scope
                 stabs.append((stab, string))                        # push current stab onto stack again
-                cname, child = build_program_tree(stabs, nodes)
+                child = build_program_tree(stabs, nodes)
                 if child.pn_type == N_FUN:
                     # child is function => push it onto stack because nested functions appear
                     # *before* the enclosing scope
-                    nodes.append((cname, child))
+                    nodes.append(child)
                 elif child.pn_type == N_LBRAC:
-                    # child is scope => add it to current scope because nested functions appear
+                    # child is scope => add it to current scope because nested scopes appear
                     # *after* the enclosing scope
-                    node.pn_children[cname] = child
+                    node.pn_children.append(child)
                 else:
                     raise AssertionError(f"child is neither function nor scope, type = {stab_type_to_name[child.pn_type]}")
             else:
                 # current scope does not exist => we've just been called to create new scope
-                name = f'SCOPE@0x{stab.st_value:08x}'
-                node = ProgramNode(N_LBRAC, start_addr=stab.st_value)
+                node = ProgramNode(N_LBRAC, f'SCOPE@0x{stab.st_value:08x}', start_addr=stab.st_value)
                 # add all nodes on the stack as children
                 while nodes:
-                    cname, child = nodes.pop()
-                    node.pn_children[cname] = child
+                    child = nodes.pop()
+                    node.pn_children.append(child)
                     if child.pn_type == N_FNAME:
                         # change type to N_FUN so that our caller will put this scope onto the stack
                         # and change name to the function's name
                         node.pn_type = N_FUN
-                        name = cname
+                        node.pn_name = child.pn_name
 
         elif stab.st_type == N_RBRAC:
             # end of scope => add end address and return created scope
             node.pn_end_addr = stab.st_value
-            return name, node
+            return node
 
     # add any functions on the stack to current scope
     while nodes:
-        cname, child = nodes.pop()
-        node.pn_children[cname] = child
+        child = nodes.pop()
+        node.pn_children.append(child)
 
-    # return name and node for compilation unit
-    return name, node
+    # return node for compilation unit
+    return node
 
 
 def print_program_node(node, indent=0):
-    print(str(node))
+    print(' ' * indent + str(node))
     indent += 4
-    for name, node in node.pn_children.items():
-        print(' ' * indent + f'{name:<20}: ', end='')
+    for node in node.pn_children:
         print_program_node(node, indent)
 
 
@@ -401,16 +395,18 @@ class Stab(BigEndianStructure):
 
 
 class ProgramNode(object):
-    def __init__(self, type, typeid='', start_addr=0, end_addr=0):
+    def __init__(self, type, name, typeid='', start_addr=0, end_addr=0):
         self.pn_type       = type
+        self.pn_name       = name
         self.pn_typeid     = typeid
         self.pn_start_addr = start_addr
         self.pn_end_addr   = end_addr
-        self.pn_children   = {}
+        self.pn_children   = []
+        # In the C version we will also need a pn_next field to create a linked list
 
     def __str__(self):
         # TODO: look up type id in data dictionary => typeid_to_type()
-        return f"ProgramNode(pn_type={stab_type_to_name[self.pn_type]}, pn_typeid='{self.pn_typeid}', pn_start_addr=0x{self.pn_start_addr:08x}, pn_end_addr=0x{self.pn_end_addr:08x})"
+        return f"ProgramNode(pn_type={stab_type_to_name[self.pn_type]}, pn_name='{self.pn_name}', pn_typeid='{self.pn_typeid}', pn_start_addr=0x{self.pn_start_addr:08x}, pn_end_addr=0x{self.pn_end_addr:08x})"
 
 
 class HunkReader(object):
@@ -446,6 +442,7 @@ class HunkReader(object):
 
                 except Exception as ex:
                     log(ERROR, "error occured while reading file: %s", ex)
+                    raise
                     break
 
 
@@ -603,7 +600,7 @@ class HunkReader(object):
                 log(DEBUG, "line #%d at address 0x%08x", line, addr)
                 nwords -= 2
         else:
-            log(DEBUG, "format is assumed to be STABS (GCC) - outputting stabs table:")
+            log(DEBUG, "format is assumed to be STABS (GCC) - dumping stabs table:")
             read_stabs_info(data)
 
 
