@@ -279,10 +279,7 @@ def read_stabs_info(data):
         if stab.st_type == N_LSYM and stab.st_value == 0:
             # TODO: type definition => add it to data dictionary
             pass
-        elif stab.st_type == N_SLINE:
-            # TODO: line / address stab => add it to line number table
-            pass
-        elif stab.st_type in (N_SO, N_GSYM, N_STSYM, N_LSYM, N_PSYM, N_FUN, N_LBRAC, N_RBRAC):
+        elif stab.st_type in (N_SO, N_GSYM, N_STSYM, N_LSYM, N_PSYM, N_FUN, N_LBRAC, N_RBRAC, N_SLINE):
             # add stab to list for building tree structure
             stabs.append((stab, string))
 
@@ -333,6 +330,13 @@ def build_program_tree(stabs, nodes=[]):
             # TODO: Maybe it would be better to use our own types for the program nodes (PN_XXX).
             symbol, typeid = string.split(':')
             nodes.append(ProgramNode(N_FNAME, symbol, typeid=typeid, start_addr=stab.st_value))
+
+        elif stab.st_type  == N_SLINE:
+            # line number / address tuple => put it on the stack, the stab for the scope (N_LBRAC) comes later
+            # TODO: The tuples appear in the tree sorted by address in descending order. Is this
+            # ok for the debugger? What about duplicate line numbers / addresses? Should we keep
+            # only the first / the last?
+            nodes.append(ProgramNode(N_SLINE, '', lineno=stab.st_desc, start_addr=stab.st_value))
 
         elif stab.st_type == N_LBRAC:
             # beginning of scope
@@ -395,18 +399,24 @@ class Stab(BigEndianStructure):
 
 
 class ProgramNode(object):
-    def __init__(self, type, name, typeid='', start_addr=0, end_addr=0):
+    def __init__(self, type, name, typeid='', start_addr=0, end_addr=0, lineno=0):
         self.pn_type       = type
         self.pn_name       = name
         self.pn_typeid     = typeid
         self.pn_start_addr = start_addr
         self.pn_end_addr   = end_addr
+        self.pn_lineno     = lineno
         self.pn_children   = []
         # In the C version we will also need a pn_next field to create a linked list
 
     def __str__(self):
         # TODO: look up type id in data dictionary => typeid_to_type()
-        return f"ProgramNode(pn_type={stab_type_to_name[self.pn_type]}, pn_name='{self.pn_name}', pn_typeid='{self.pn_typeid}', pn_start_addr=0x{self.pn_start_addr:08x}, pn_end_addr=0x{self.pn_end_addr:08x})"
+        return f"ProgramNode(pn_type={stab_type_to_name[self.pn_type]}, " \
+            f"pn_name='{self.pn_name}', " \
+            f"pn_typeid='{self.pn_typeid}', " \
+            f"pn_start_addr=0x{self.pn_start_addr:08x}, " \
+            f"pn_end_addr=0x{self.pn_end_addr:08x}, " \
+            f"pn_lineno={self.pn_lineno})" \
 
 
 class HunkReader(object):
