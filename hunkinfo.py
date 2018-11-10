@@ -285,9 +285,11 @@ def read_stabs_info(data):
 
     # build tree structure from the stabs describing the program (sort of a simplified AST)
     stabs.reverse()                                         # so that build_program_tree() can use pop()
-    node = build_program_tree(stabs)
-    program = ProgramNode(N_UNDF, '')                       # root node
-    program.pn_children.append(node)
+    program = ProgramNode(N_UNDF, '')                       # root node of program
+    while stabs:
+        # loop over all compilation units
+        node = build_program_tree(stabs)
+        program.pn_children.append(node)
     log(DEBUG, "dumping program tree:")
     print_program_node(program)
 
@@ -301,17 +303,32 @@ def build_program_tree(stabs, nodes=[]):
     # inner. We handle them by recursively calling ourselves for each range of stabs
     # between N_LBRAC and N_RBRAC. Tricky stuff...
     node = None
+    # set source directory to empty string because if there is just one compilation unit
+    # there is no N_SO stab for the directory
+    srcdir = ''
     while stabs:
         stab, string = stabs.pop()
         if stab.st_type == N_SO:
-            # compilation unit => create new node
-            # TODO: handle multiple compilation units
-            # TODO: store also directory (first N_SO)
-            node = ProgramNode(N_SO, string)
+            if node is None:
+                # new compilation unit => create new node
+                if string.endswith('/'):
+                    # stab for source directory
+                    srcdir = string
+                else:
+                    # stab for file name
+                    node = ProgramNode(N_SO, srcdir + string)
+            else:
+                # end of compilation unit => push stab back onto stack, add any functions
+                # on the stack to current scope and return node for compilation unit
+                stabs.append((stab, string))
+                while nodes:
+                    child = nodes.pop()
+                    node.pn_children.append(child)
+                return node
 
         elif stab.st_type in (N_GSYM, N_STSYM, N_LCSYM):
             # global or file-scoped variable => store it in current node (compilation unit)
-            symbol, typeid = string.split(':')
+            symbol, typeid = string.split(':', 1)
             if node is None:
                 raise AssertionError("stab for global or file-scoped variable but no current node")
             node.pn_children.append(ProgramNode(stab.st_type, symbol, typeid=typeid, start_addr=stab.st_value))
@@ -320,7 +337,7 @@ def build_program_tree(stabs, nodes=[]):
             # local variable or function parameter => put it on the stack,the stab for the
             # scope (N_LBRAC) comes later. In case of register variables (N_RSYM), the value
             # is the register number with 0..7 = D0..D7 and 8..15 = A0..A7.
-            symbol, typeid = string.split(':')
+            symbol, typeid = string.split(':', 1)
             nodes.append(ProgramNode(stab.st_type, symbol, typeid=typeid, start_addr=stab.st_value))
 
         elif stab.st_type  == N_FUN:
@@ -328,7 +345,7 @@ def build_program_tree(stabs, nodes=[]):
             # We change the type to N_FNAME so that we can differentiate between a node with
             # the scope of the function (N_FUN) and a node with just its name and start address (N_FNAME).
             # TODO: Maybe it would be better to use our own types for the program nodes (PN_XXX).
-            symbol, typeid = string.split(':')
+            symbol, typeid = string.split(':', 1)
             nodes.append(ProgramNode(N_FNAME, symbol, typeid=typeid, start_addr=stab.st_value))
 
         elif stab.st_type  == N_SLINE:
@@ -372,12 +389,10 @@ def build_program_tree(stabs, nodes=[]):
             node.pn_end_addr = stab.st_value
             return node
 
-    # add any functions on the stack to current scope
+    # add any functions on the stack to current scope and return node for compilation unit
     while nodes:
         child = nodes.pop()
         node.pn_children.append(child)
-
-    # return node for compilation unit
     return node
 
 
